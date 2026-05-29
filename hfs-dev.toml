@@ -1,0 +1,38 @@
+schema_version = 2
+standard = "hfs-dev"
+pattern = "A"
+runtime_mode = "self-contained"
+space_root_mode = "repo-root"
+hfs_dir = "."
+export_command = "git archive --format=tar HEAD | tar -x -C /tmp/data-agent-panel-hfs"
+public_port = 7860
+canonical_health_endpoint = "/_ops/healthz"
+release_pin_required = true
+required_files = [
+  "README.md",
+  "Dockerfile",
+  "hf_entrypoint.sh",
+  "requirements.txt",
+  "scripts/hf_space_smoke.sh",
+  "scripts/static_check.py",
+  "hfs-dev.toml",
+]
+source_excludes = [
+  ".env",
+  ".env.local",
+  "local",
+  "data",
+  "logs",
+  ".git",
+  ".github",
+  "node_modules",
+]
+
+[[release_pins]]
+name = "PYTHON_BASE_IMAGE"
+type = "image_ref"
+source = "Dockerfile build arg"
+required_for_release = true
+dev_mutable_default_allowed = true
+release_requires_digest = true
+description = "Development defaults to python:3.11-slim; release builds should pass a digest-pinned Python base image."

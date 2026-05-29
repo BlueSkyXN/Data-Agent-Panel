@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+WORKDIR /app
+ENV DAP_DATA_DIR=/app/data \
+    DAP_DB_PATH=/app/data/data_agent_platform.db \
+    DAP_BUSINESS_DB_PATH=/app/data/business_sample.db \
+    DAP_CODEX_WORKSPACE_ROOT=/app \
+    DAP_CODEX_TASK_DIR=/app/data/codex_tasks \
+    DAP_CODEX_MODE=cli \
+    DAP_CODEX_CLI_ENABLED=true \
+    DAP_CODEX_CLI_COMMAND=codex
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY . /app
+CMD ["python", "-m", "uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

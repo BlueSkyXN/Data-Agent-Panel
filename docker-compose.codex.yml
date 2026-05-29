@@ -1,0 +1,17 @@
+services:
+  data-agent-codex:
+    build:
+      context: .
+      dockerfile: Dockerfile.codex
+    ports:
+      - "8000:8000"
+    environment:
+      DAP_APP_ENV: dev
+      DAP_SECRET_KEY: dev-only-change-me
+      DAP_CORS_ORIGINS: http://localhost:8000
+      DAP_CODEX_MODE: cli
+      DAP_CODEX_CLI_ENABLED: "true"
+      DAP_CODEX_CLI_SANDBOX: workspace-write
+      DAP_CODEX_CLI_APPROVAL_POLICY: never
+    volumes:
+      - .:/app

@@ -1,0 +1,21 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+*.pyc
+*.pyo
+*.pyd
+*.log
+.env
+.env.local
+.env.*.local
+.DS_Store
+htmlcov
+.coverage
+backup
+node_modules
+local
+logs
+.github
+# Runtime DBs are initialized on container start. Do not bake local state into HF image.
+data

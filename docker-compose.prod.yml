@@ -1,0 +1,24 @@
+services:
+  data-agent-platform:
+    build: .
+    container_name: data-agent-platform-prod
+    ports:
+      - "8000:7860"
+    environment:
+      - DAP_APP_ENV=production
+      - DAP_DEMO_MODE=false
+      - DAP_SECRET_KEY=${DAP_SECRET_KEY:?set DAP_SECRET_KEY}
+      - DAP_DB_PATH=/app/data/data_agent_platform.db
+      - DAP_BUSINESS_DB_PATH=/app/data/business_sample.db
+      - DAP_CORS_ORIGINS=${DAP_CORS_ORIGINS:?set DAP_CORS_ORIGINS}
+      - DAP_ALLOWED_EXTERNAL_AGENT_HOSTS=${DAP_ALLOWED_EXTERNAL_AGENT_HOSTS:-localhost,127.0.0.1}
+      - DAP_SQL_MAX_ROWS=${DAP_SQL_MAX_ROWS:-500}
+      - DAP_SQL_TIMEOUT_MS=${DAP_SQL_TIMEOUT_MS:-5000}
+    volumes:
+      - dap_data:/app/data
+    restart: always
+    read_only: false
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  dap_data:

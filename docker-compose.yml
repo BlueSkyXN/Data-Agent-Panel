@@ -1,0 +1,17 @@
+services:
+  data-agent-platform:
+    build: .
+    ports:
+      - "8000:7860"
+    environment:
+      DAP_APP_ENV: dev
+      DAP_HF_SPACE: "false"
+      DAP_DEMO_MODE: "true"
+      DAP_SECRET_KEY: dev-secret-change-me
+      DAP_OPS_TOKEN: dev-ops-token
+      DAP_CORS_ORIGINS: "*"
+      DAP_DATA_DIR: /data/data-agent-platform
+    volumes:
+      - dap_data:/data
+volumes:
+  dap_data:

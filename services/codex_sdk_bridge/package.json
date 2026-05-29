@@ -1,0 +1,13 @@
+{
+  "name": "data-agent-codex-sdk-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional TypeScript bridge for @openai/codex-sdk. Not required for the default Python platform runtime.",
+  "dependencies": {
+    "@openai/codex-sdk": "latest"
+  },
+  "scripts": {
+    "run-task": "node run_task.mjs"
+  }
+}

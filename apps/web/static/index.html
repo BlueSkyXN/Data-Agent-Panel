@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>独立数据智能体平台</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="login" class="login-screen">
+    <div class="login-shell">
+      <div class="login-copy">
+        <div class="eyebrow">DATA AGENT PLATFORM</div>
+        <h1>独立数据智能体平台</h1>
+        <p>内置智能问数、深度研究、数据能力、语义治理、Trace 证据链、评测运营与 Codex 工程智能体运行工作台。</p>
+        <div class="login-badges">
+          <span>Agent Gateway</span><span>SQL Guard</span><span>Codex CLI / SDK</span><span>Trace</span>
+        </div>
+      </div>
+      <div class="login-card">
+        <h2>登录</h2>
+        <label>用户名</label><input id="username" value="admin" autocomplete="username" />
+        <label>密码</label><input id="password" value="admin123" type="password" autocomplete="current-password" />
+        <button onclick="login()">进入平台</button>
+        <div class="hint">默认：admin/admin123 或 user/user123。生产环境请禁用演示账号。</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <aside class="sidebar">
+      <div class="logo"><div>DA</div><span>DATA AGENT</span></div>
+      <nav id="nav">
+        <button data-page="dashboard" onclick="showPage('dashboard')">总览</button>
+        <button data-page="agents" onclick="showPage('agents')">Agent Studio</button>
+        <button data-page="chat" onclick="showPage('chat')">智能问数</button>
+        <button data-page="analysis" onclick="showPage('analysis')">深度研究</button>
+        <button data-page="panels" onclick="showPage('panels')">分析面板</button>
+        <button data-page="dataops" onclick="showPage('dataops')">数据能力</button>
+        <button data-page="semantic" onclick="showPage('semantic')">语义中心</button>
+        <button data-page="codex" onclick="showPage('codex')">Codex 运行台</button>
+        <button data-page="reports" onclick="showPage('reports')">报告中心</button>
+        <button data-page="knowledge" onclick="showPage('knowledge')">知识库</button>
+        <button data-page="evals" onclick="showPage('evals')">评测中心</button>
+        <button data-page="audit" onclick="showPage('audit')">审计日志</button>
+      </nav>
+      <div class="user-box"><span id="currentUser"></span><button class="ghost-dark" onclick="logout()">退出</button></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">Enterprise Data Agent</div>
+          <strong id="pageTitle">总览</strong>
+        </div>
+        <div class="top-actions">
+          <input id="globalSearch" placeholder="搜索 Agent / 指标 / 任务" onkeydown="if(event.key==='Enter')globalJump()" />
+          <button class="secondary" onclick="globalJump()">搜索</button>
+          <button onclick="showPage('codex')">创建 Codex 任务</button>
+        </div>
+      </header>
+      <section id="page-dashboard" class="page"></section>
+      <section id="page-agents" class="page hidden"></section>
+      <section id="page-chat" class="page hidden"></section>
+      <section id="page-analysis" class="page hidden"></section>
+      <section id="page-panels" class="page hidden"></section>
+      <section id="page-dataops" class="page hidden"></section>
+      <section id="page-semantic" class="page hidden"></section>
+      <section id="page-codex" class="page hidden"></section>
+      <section id="page-reports" class="page hidden"></section>
+      <section id="page-knowledge" class="page hidden"></section>
+      <section id="page-evals" class="page hidden"></section>
+      <section id="page-audit" class="page hidden"></section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

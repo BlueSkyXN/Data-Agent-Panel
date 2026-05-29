@@ -1,0 +1,17 @@
+# Local approximation of Hugging Face Docker Space runtime.
+services:
+  data-agent-hf-space:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      DAP_APP_ENV: hf-space
+      DAP_HF_SPACE: "true"
+      SPACE_HOST: localhost:7860
+      DAP_SECRET_KEY: local-hf-secret-change-me
+      DAP_OPS_TOKEN: local-hf-ops-token
+      DAP_CORS_ORIGINS: "*"
+    volumes:
+      - dap_hf_persist:/persist
+volumes:
+  dap_hf_persist:
