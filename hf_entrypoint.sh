@@ -29,6 +29,24 @@ export PYTHONPATH="${PYTHONPATH:-/app}"
 
 mkdir -p "${DAP_DATA_DIR}" "${DAP_CODEX_TASK_DIR}" "${HF_HOME}" "${HF_HUB_CACHE}"
 
+if [ -z "${DAP_SECRET_KEY:-}" ] || [ "${DAP_SECRET_KEY:-}" = "change-me-in-production" ]; then
+  SECRET_DIR="${DAP_DATA_DIR}/config"
+  SECRET_FILE="${SECRET_DIR}/dap_secret_key"
+  mkdir -p "$SECRET_DIR"
+  if [ ! -s "$SECRET_FILE" ]; then
+    python - <<'PY' > "$SECRET_FILE"
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+    chmod 600 "$SECRET_FILE"
+  fi
+  export DAP_SECRET_KEY="$(cat "$SECRET_FILE")"
+fi
+
+if [ -z "${DAP_OPS_TOKEN:-}" ]; then
+  echo "[data-agent-hf] WARNING: DAP_OPS_TOKEN is not set; /_ops endpoints will be locked."
+fi
+
 echo "[data-agent-hf] PORT=${PORT}"
 echo "[data-agent-hf] DAP_DATA_DIR=${DAP_DATA_DIR}"
 echo "[data-agent-hf] DAP_DB_PATH=${DAP_DB_PATH}"

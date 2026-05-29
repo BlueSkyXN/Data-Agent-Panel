@@ -95,8 +95,11 @@ class Settings:
 
     def validate_for_runtime(self) -> list[str]:
         warnings: list[str] = []
-        if self.is_production and self.secret_key == "change-me-in-production":
+        hardened_runtime = self.is_production or self.hf_space
+        if hardened_runtime and self.secret_key == "change-me-in-production":
             warnings.append("DAP_SECRET_KEY is using the default value; set a strong secret before production use.")
+        if hardened_runtime and not self.ops_token:
+            warnings.append("DAP_OPS_TOKEN is empty; /_ops endpoints are locked until a token is configured.")
         if self.is_production and "*" in self.cors_origins:
             warnings.append("DAP_CORS_ORIGINS allows '*'; restrict origins before production use.")
         if self.is_production and self.demo_mode:

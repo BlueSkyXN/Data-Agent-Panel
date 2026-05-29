@@ -2,6 +2,9 @@
 
 版本：`0.5.0-hf-space`
 
+当前补充：后续版本已将 HF / production 模式下未配置 `DAP_OPS_TOKEN` 的 `/_ops/*`
+行为调整为锁定并返回 503；配置 `DAP_OPS_TOKEN` 后才期望返回 200。
+
 ## 已完成
 
 - 根目录 README 加入 Hugging Face Space YAML 元数据：`sdk: docker`、`app_port: 7860`。
@@ -29,7 +32,8 @@ python scripts/security_smoke_test.py
 python scripts/full_agent_smoke_test.py
 python scripts/codex_runtime_smoke_test.py
 python scripts/hardening_regression_test.py
-DAP_HF_SPACE=true DAP_OPS_TOKEN='' DAP_DATA_DIR=/tmp/dap-hf-test python scripts/hf_mode_regression_test.py
+DAP_HF_SPACE=true DAP_OPS_TOKEN=local-hf-ops-token DAP_DATA_DIR=/tmp/dap-hf-test python scripts/hf_mode_regression_test.py
+DAP_HF_SPACE=true DAP_DATA_DIR=/tmp/dap-hf-test-noops python scripts/hf_mode_regression_test.py
 node --check apps/web/static/app.js
 ```
 
@@ -46,7 +50,7 @@ node --check apps/web/static/app.js
 - Codex mock 派发
 - 硬化回归测试
 - HF iframe header 适配
-- HF ops endpoint
+- HF ops endpoint 配置 token 后可访问、未配置 token 时锁定
 - 前端 JS 语法检查
 
 ## 未在当前环境实际验证

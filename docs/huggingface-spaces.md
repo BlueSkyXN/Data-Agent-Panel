@@ -57,6 +57,8 @@ apps/api/middleware.py        # HF iframe 安全头适配
 HF Space 适配包仍然是演示 / POC / 内测部署形态：
 
 - 公共 Space 必须设置 `DAP_SECRET_KEY` 和 `DAP_OPS_TOKEN`。
+- `DAP_OPS_TOKEN` 未设置时，`/_ops/*` 会在 HF / production 模式下锁定。
+- `DAP_SECRET_KEY` 未设置时，Docker entrypoint 会在持久化数据目录生成随机值；正式部署仍建议放入 Space Secrets。
 - 建议 Visibility 使用 Private 或 Protected。
 - 不建议把真实生产数据放进 Space。
 - 不建议在公共 Space 开启 Codex CLI/SDK 执行。

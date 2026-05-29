@@ -45,6 +45,8 @@ DAP_SECRET_KEY=<strong random secret>
 DAP_OPS_TOKEN=<strong random read-only ops token>
 ```
 
+`DAP_OPS_TOKEN` 未配置时，`/_ops/*` 在 HF / production 模式下会锁定。Docker/HF entrypoint 会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但这只是防止默认签名密钥暴露的兜底；正式部署仍应显式设置 Secret。
+
 不要把真实 secret、内部 URL、客户数据或 `.env.local` 提交进 GitHub 或同步到公开产物中。
 
 ## 本地账本

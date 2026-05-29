@@ -10,9 +10,11 @@ canonical_health_endpoint = "/_ops/healthz"
 release_pin_required = true
 required_files = [
   "README.md",
+  "README.hf-space.md",
   "Dockerfile",
   "hf_entrypoint.sh",
   "requirements.txt",
+  "docs/huggingface-spaces.md",
   "scripts/hf_space_smoke.sh",
   "scripts/static_check.py",
   "hfs-dev.toml",
@@ -26,6 +28,11 @@ source_excludes = [
   ".git",
   ".github",
   "node_modules",
+  "*.secret",
+  "*.key",
+  "*.pem",
+  "*.p12",
+  "*.pfx",
 ]
 
 [[release_pins]]

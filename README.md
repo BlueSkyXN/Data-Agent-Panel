@@ -120,6 +120,8 @@ DAP_SECRET_KEY=<强随机密钥>
 DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
+`DAP_OPS_TOKEN` 未配置时，`/_ops/*` 诊断入口会在 Hugging Face / production 模式下锁定。Docker/HF 启动脚本会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但正式部署仍建议显式设置并保存在 Space Secrets 中。
+
 部署后执行：
 
 ```bash
