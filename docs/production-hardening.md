@@ -25,9 +25,10 @@
 7. 接入真实数据源只读账号。
 8. 配置真实行列权限、数据分级、脱敏策略。
 9. 配置真实外部 Agent endpoint allowlist。
-10. 接入集中日志、监控、告警、备份恢复。
-11. 完成 50–100 个真实业务问题评测。
-12. 完成安全扫描和权限绕过测试。
+10. 配置 DAP_OPS_TOKEN，并限制诊断入口访问范围。
+11. 接入集中日志、监控、告警、备份恢复。
+12. 完成 50–100 个真实业务问题评测。
+13. 完成安全扫描和权限绕过测试。
 ```
 
 ## 3. 环境变量
@@ -36,6 +37,7 @@
 |---|---|
 | `DAP_APP_ENV` | `dev` / `production` |
 | `DAP_SECRET_KEY` | Token 签名密钥，生产必须替换 |
+| `DAP_OPS_TOKEN` | `/_ops/*` 只读诊断入口 token，HF / production 未设置时会锁定 |
 | `DAP_CORS_ORIGINS` | 允许跨域来源 |
 | `DAP_SQL_MAX_ROWS` | SQL 最大返回行数 |
 | `DAP_SQL_TIMEOUT_MS` | SQL 查询超时 |

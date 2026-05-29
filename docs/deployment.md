@@ -34,6 +34,8 @@ DAP_SECRET_KEY=<强随机密钥>
 DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
+`DAP_OPS_TOKEN` 未配置时，HF / production 模式会锁定 `/_ops/*` 诊断接口；live smoke 需要显式传入 `OPS_TOKEN=<DAP_OPS_TOKEN>`。
+
 详细见 `README.hf-space.md` 和 `docs/huggingface-spaces.md`。
 
 ## GitHub / HF 四态验证

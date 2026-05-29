@@ -5,6 +5,11 @@ __pycache__
 *.pyc
 *.pyo
 *.pyd
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
 *.log
 .env
 .env.local

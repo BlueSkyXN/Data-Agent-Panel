@@ -19,6 +19,13 @@ GET  /api/auth/me
 Authorization: Bearer <token>
 ```
 
+在 Hugging Face Protected/Private Space 的脚本化 smoke 中，如果 `Authorization`
+已被 HF 代理 token 占用，也可以使用等价的应用认证头：
+
+```http
+X-DAP-Token: <token>
+```
+
 ## Agent
 
 ```http

@@ -29,6 +29,8 @@ DAP_SECRET_KEY=<强随机密钥>
 DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
+`DAP_OPS_TOKEN` 控制 `/_ops/*` 只读诊断入口。未配置时，HF / production 模式会锁定这些接口并返回不可用状态。`DAP_SECRET_KEY` 缺失时，Docker entrypoint 会在持久化数据目录中生成随机签名密钥；长期部署仍建议显式设置 Space Secret。
+
 ## 持久化目录优先级
 
 ```text
@@ -55,4 +57,11 @@ git push
 
 ```bash
 OPS_TOKEN=<你的 DAP_OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
+```
+
+如已禁用默认演示账号，可显式传入 smoke 账号：
+
+```bash
+SMOKE_USERNAME=<用户名> SMOKE_PASSWORD=<密码> \
+  OPS_TOKEN=<你的 DAP_OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
 ```

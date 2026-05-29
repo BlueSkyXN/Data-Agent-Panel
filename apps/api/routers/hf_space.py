@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import hmac
 import os
 import platform
 import shutil
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import APIRouter, Cookie, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 
 from .. import db
 from ..config import get_settings
@@ -16,13 +17,23 @@ router = APIRouter(tags=["hf-space"])
 _started_at = time.time()
 
 
-def _check_ops_token(x_ops_token: str | None, token_query: str | None) -> None:
+OPS_COOKIE_NAME = "dap_ops_token"
+
+
+def _request_is_https(request: Request) -> bool:
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    return request.url.scheme == "https" or forwarded_proto == "https"
+
+
+def _check_ops_token(x_ops_token: str | None, token_query: str | None, token_cookie: str | None = None) -> None:
     settings = get_settings()
     expected = settings.ops_token
     if not expected:
+        if settings.hf_space or settings.is_production:
+            raise HTTPException(status_code=503, detail="ops token is not configured")
         return
-    provided = x_ops_token or token_query or ""
-    if provided != expected:
+    provided = x_ops_token or token_query or token_cookie or ""
+    if not hmac.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="invalid ops token")
 
 
@@ -53,8 +64,24 @@ def healthz():
 
 
 @router.get("/_ops/", response_class=HTMLResponse, include_in_schema=False)
-def ops_home(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_home(
+    request: Request,
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
+    if token:
+        response = RedirectResponse(url="/_ops/", status_code=303)
+        response.set_cookie(
+            OPS_COOKIE_NAME,
+            token,
+            httponly=True,
+            secure=_request_is_https(request),
+            samesite="lax",
+            max_age=3600,
+        )
+        return response
     settings = get_settings()
     return f"""
 <!doctype html>
@@ -84,26 +111,42 @@ def _ops_health_payload() -> dict:
 
 
 @router.get("/_ops/healthz", include_in_schema=False)
-def ops_healthz(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_healthz(
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
     return _ops_health_payload()
 
 
 @router.get("/_ops/health", include_in_schema=False)
-def ops_health(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_health(
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
     return _ops_health_payload()
 
 
 @router.get("/_ops/status", include_in_schema=False)
-def ops_status(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_status(
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
     return _ops_health_payload()
 
 
 @router.get("/_ops/system", include_in_schema=False)
-def ops_system(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_system(
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
     settings = get_settings()
     return {
         "platform": platform.platform(),
@@ -116,8 +159,12 @@ def ops_system(token: str | None = Query(default=None), x_ops_token: str | None 
 
 
 @router.get("/_ops/config", include_in_schema=False)
-def ops_config(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_config(
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
     settings = get_settings()
     payload = settings.redacted()
     payload["ops_token_configured"] = bool(settings.ops_token)
@@ -126,7 +173,11 @@ def ops_config(token: str | None = Query(default=None), x_ops_token: str | None 
 
 
 @router.get("/_ops/version", include_in_schema=False)
-def ops_version(token: str | None = Query(default=None), x_ops_token: str | None = Header(default=None, alias="X-Ops-Token")):
-    _check_ops_token(x_ops_token, token)
+def ops_version(
+    token: str | None = Query(default=None),
+    x_ops_token: str | None = Header(default=None, alias="X-Ops-Token"),
+    ops_cookie: str | None = Cookie(default=None, alias=OPS_COOKIE_NAME),
+):
+    _check_ops_token(x_ops_token, token, ops_cookie)
     settings = get_settings()
     return {"name": settings.app_name, "version": settings.app_version, "env": settings.app_env, "hf_space": settings.hf_space}

@@ -57,10 +57,18 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def get_current_user(authorization: Annotated[str | None, Header()] = None) -> dict:
-    if not authorization or not authorization.lower().startswith("bearer "):
+def get_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+    x_dap_token: Annotated[str | None, Header(alias="X-DAP-Token")] = None,
+) -> dict:
+    if x_dap_token:
+        token = x_dap_token.strip()
+        if token.lower().startswith("bearer "):
+            token = token.split(" ", 1)[1]
+    elif authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+    else:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = authorization.split(" ", 1)[1]
     user_id = parse_token(token)
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
