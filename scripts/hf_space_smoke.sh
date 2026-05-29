@@ -5,6 +5,7 @@ BASE_URL="${BASE_URL%/}"
 OPS_TOKEN="${OPS_TOKEN:-}"
 RETRIES="${SMOKE_RETRIES:-30}"
 DELAY="${SMOKE_DELAY:-3}"
+PYTHON_BIN="${PYTHON:-python3}"
 
 curl_retry() {
   local url="$1"
@@ -39,11 +40,11 @@ curl_retry "$BASE_URL/_ops/system"
 # Verify login and a basic chat query.
 TOKEN=$(curl -fsS -X POST "$BASE_URL/api/auth/login" \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"admin123"}' | python -c 'import sys,json; print(json.load(sys.stdin)["token"])')
+  -d '{"username":"admin","password":"admin123"}' | "$PYTHON_BIN" -c 'import sys,json; print(json.load(sys.stdin)["token"])')
 
 curl -fsS -X POST "$BASE_URL/api/chat/query" \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"agent_id":"agent_router","message":"本月收入最高的渠道有哪些？"}' | python -c 'import sys,json; data=json.load(sys.stdin); assert data.get("trace_id"); print("OK: chat trace", data["trace_id"])'
+  -d '{"agent_id":"agent_router","message":"本月收入最高的渠道有哪些？"}' | "$PYTHON_BIN" -c 'import sys,json; data=json.load(sys.stdin); assert data.get("trace_id"); print("OK: chat trace", data["trace_id"])'
 
 echo "Hugging Face Space smoke passed: $BASE_URL"
