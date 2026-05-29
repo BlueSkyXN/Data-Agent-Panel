@@ -12,6 +12,9 @@ curl_retry() {
   if [ -n "$OPS_TOKEN" ]; then
     extra_header=(-H "X-Ops-Token: ${OPS_TOKEN}")
   fi
+  if [ -n "${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}" ]; then
+    extra_header+=(-H "Authorization: Bearer ${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}")
+  fi
   local n=1
   until curl -fsS "${extra_header[@]}" "$url" >/tmp/dap_hf_smoke.out; do
     if [ "$n" -ge "$RETRIES" ]; then
