@@ -144,7 +144,7 @@ function compactTags(values,limit=4){
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
 }
 function defaultContextPack(){
-  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
+  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',sessionIds:[],toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
 }
 function normalizeIdList(list,limit=6){
   return [...new Set(asList(list).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,limit);
@@ -160,6 +160,8 @@ function normalizeContextPack(pack={}){
   next.reportIds=normalizeIdList(next.reportIds,4);
   next.traceIds=normalizeIdList(next.traceIds,6);
   next.sessionId=String(next.sessionId||'').slice(0,90);
+  next.sessionIds=normalizeIdList([next.sessionId,...asList(next.sessionIds)],8);
+  next.sessionId=String(next.sessionId||next.sessionIds[0]||'').slice(0,90);
   next.toolMode=['auto','analysis','sql','codex'].includes(next.toolMode)?next.toolMode:'auto';
   next.evidenceDepth=['standard','full'].includes(next.evidenceDepth)?next.evidenceDepth:'standard';
   next.memoryMode=['default','project'].includes(next.memoryMode)?next.memoryMode:'project';
@@ -203,7 +205,7 @@ function persistContextPackPresets(){
 }
 function contextPackHasContent(pack=contextPack){
   const p=normalizeContextPack(pack);
-  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionId||(p.includeCanvas&&chatCanvasValue().trim()));
+  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionIds.length||(p.includeCanvas&&chatCanvasValue().trim()));
 }
 function asList(value){
   if(Array.isArray(value)) return value;
@@ -1735,13 +1737,14 @@ function contextPackCounts(){
     knowledge:p.knowledgeBaseIds.length,
     reports:p.reportIds.length,
     traces:p.traceIds.length,
+    sessions:p.sessionIds.length,
     instructions:p.instructions.trim()?1:0,
     canvas:p.includeCanvas&&chatCanvasValue().trim()?1:0
   };
 }
 function contextPackSummaryLabel(){
   const counts=contextPackCounts();
-  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.instructions+counts.canvas+(contextPack.agentId?1:0)+(contextPack.sessionId?1:0);
+  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.sessions+counts.instructions+counts.canvas+(contextPack.agentId?1:0);
   return total?`${total} 项上下文`:'未捕获';
 }
 function contextPackSummaryDetail(){
@@ -1755,7 +1758,7 @@ function contextPackSummaryDetail(){
   if(counts.reports) parts.push(`${counts.reports} 报告`);
   if(counts.traces) parts.push(`${counts.traces} Trace`);
   if(counts.canvas) parts.push('Canvas');
-  if(contextPack.sessionId) parts.push('会话');
+  if(counts.sessions) parts.push(`${counts.sessions} 会话`);
   return parts.length?parts.join(' · '):'Project-style local context';
 }
 function contextPackAgentName(){
@@ -1773,7 +1776,7 @@ function contextPackPills(){
   p.knowledgeBaseIds.forEach(id=>pills.push({kind:'knowledge',id,label:'知识库',value:knowledgeBaseName(id)}));
   p.reportIds.forEach(id=>pills.push({kind:'report',id,label:'报告',value:contextPackReportTitle(id)}));
   p.traceIds.forEach(id=>pills.push({kind:'trace',id,label:'Trace',value:id}));
-  if(p.sessionId) pills.push({kind:'session',id:p.sessionId,label:'会话',value:p.sessionId});
+  p.sessionIds.forEach(id=>pills.push({kind:'session',id,label:'会话',value:id}));
   return pills.length?`<div class="context-pack-pills">${pills.map(pill=>`<article class="context-pack-pill">
     <div><small>${esc(pill.label)}</small><b>${esc(short(pill.value,34))}</b></div>
     <nav aria-label="${esc(pill.label)} 操作"><button type="button" onclick="openContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">打开</button><button type="button" onclick="removeContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">移除</button></nav>
@@ -1971,13 +1974,18 @@ function toggleContextPackCanvas(enabled){
 function activeTraceId(){
   return currentTrace?.id || currentTrace?.trace_id || '';
 }
+function addSessionToContextPack(sessionId){
+  if(!sessionId) return;
+  contextPack.sessionIds=normalizeIdList([sessionId,...asList(contextPack.sessionIds)],8);
+  contextPack.sessionId=contextPack.sessionIds[0]||sessionId;
+}
 function captureContextPack(){
   const ctx=chatContextSnapshot();
   if(ctx.agent?.id) contextPack.agentId=ctx.agent.id;
   if(ctx.dataset?.id) contextPack.datasetIds=normalizeIdList([...contextPack.datasetIds,ctx.dataset.id],6);
   const traceId=activeTraceId();
   if(traceId) contextPack.traceIds=normalizeIdList([traceId,...contextPack.traceIds],6);
-  if(activeSessionId) contextPack.sessionId=activeSessionId;
+  if(activeSessionId) addSessionToContextPack(activeSessionId);
   contextPack.toolMode=ctx.toolMode;
   contextPack.evidenceDepth=ctx.evidenceDepth;
   contextPack.updatedAt=new Date().toISOString();
@@ -2019,7 +2027,10 @@ function removeContextPackItem(kind,id){
   if(kind==='knowledge') contextPack.knowledgeBaseIds=removeId(contextPack.knowledgeBaseIds);
   if(kind==='report') contextPack.reportIds=removeId(contextPack.reportIds);
   if(kind==='trace') contextPack.traceIds=removeId(contextPack.traceIds);
-  if(kind==='session') contextPack.sessionId='';
+  if(kind==='session'){
+    contextPack.sessionIds=removeId(asList(contextPack.sessionIds));
+    contextPack.sessionId=contextPack.sessionIds[0]||'';
+  }
   contextPack.updatedAt=new Date().toISOString();
   persistContextPack({toast:'已从工作包移除'});
 }
@@ -2035,7 +2046,7 @@ function addTraceToContextPack(traceId,btn){
   if(!traceId) return;
   setBusy(btn,true);
   contextPack.traceIds=normalizeIdList([traceId,...contextPack.traceIds],6);
-  if(activeSessionId) contextPack.sessionId=activeSessionId;
+  if(activeSessionId) addSessionToContextPack(activeSessionId);
   contextPack.updatedAt=new Date().toISOString();
   persistContextPack({toast:'Trace 已加入工作包'});
   setBusy(btn,false);
@@ -2058,7 +2069,7 @@ function contextPackPrompt(){
   if(p.knowledgeBaseIds.length) lines.push(`知识库：${p.knowledgeBaseIds.map(knowledgeBaseName).join('、')}`);
   if(p.reportIds.length) lines.push(`报告：${p.reportIds.map(id=>short(contextPackReportTitle(id),42)).join('、')}`);
   if(p.traceIds.length) lines.push(`Trace：${p.traceIds.join('、')}`);
-  if(p.sessionId) lines.push(`来源会话：${p.sessionId}`);
+  if(p.sessionIds.length) lines.push(`来源会话：${p.sessionIds.join('、')}`);
   if(p.includeCanvas&&chatCanvasValue().trim()) lines.push(`Canvas 草稿：${short(chatCanvasValue().trim().replace(/\s+/g,' '),520)}`);
   lines.push('', '请保持 RBAC、SQL Guard、Trace 和审计证据链，不要绕过权限或数据分级。', '本次问题：');
   return lines.join('\n');
@@ -2073,7 +2084,7 @@ function contextPackCanvasMarkdown(){
   if(p.knowledgeBaseIds.length) lines.push('## 知识库',...p.knowledgeBaseIds.map(id=>`- ${knowledgeBaseName(id)} (${id})`),'');
   if(p.reportIds.length) lines.push('## 报告',...p.reportIds.map(id=>`- ${contextPackReportTitle(id)} (${id})`),'');
   if(p.traceIds.length) lines.push('## Trace',...p.traceIds.map(id=>`- ${id}`),'');
-  if(p.sessionId) lines.push('## 来源会话',`- ${p.sessionId}`,'');
+  if(p.sessionIds.length) lines.push('## 来源会话',...p.sessionIds.map(id=>`- ${id}`),'');
   if(p.includeCanvas&&chatCanvasValue().trim()) lines.push('## Canvas 草稿',chatCanvasValue().trim().slice(0,3000),'');
   lines.push('## 下一步','- 基于工作包继续提问或生成报告要点。','- 若涉及 SQL，先通过 SQL Guard 并在 Trace 中复核。');
   return lines.join('\n');
@@ -2088,6 +2099,7 @@ function contextPackPayload(){
     report_ids:p.reportIds,
     trace_ids:p.traceIds,
     session_id:p.sessionId||null,
+    session_ids:p.sessionIds,
     tool_mode:p.toolMode,
     evidence_depth:p.evidenceDepth,
     memory_mode:p.memoryMode,
@@ -2530,18 +2542,18 @@ function sessionMatches(s){
   const q=(chatSessionFilter.q||'').trim().toLowerCase();
   const pack=normalizeContextPack(contextPack);
   const okStatus=status==='all'
-    || (status==='project' ? Boolean(pack.sessionId && s.id===pack.sessionId) : (s.status||'active')===status);
-  const haystack=[s.title,s.id,s.agent_id,s.status,pack.sessionId===s.id?'project context pack':''].filter(Boolean).join(' ').toLowerCase();
+    || (status==='project' ? pack.sessionIds.includes(s.id) : (s.status||'active')===status);
+  const haystack=[s.title,s.id,s.agent_id,s.status,pack.sessionIds.includes(s.id)?'project context pack':''].filter(Boolean).join(' ').toLowerCase();
   return okStatus && (!q || haystack.includes(q));
 }
 function sessionCard(s){
   const archived=(s.status||'active')==='archived';
-  const linked=normalizeContextPack(contextPack).sessionId===s.id;
+  const linked=normalizeContextPack(contextPack).sessionIds.includes(s.id);
   return `<article class="session-item ${s.id===activeSessionId?'active':''} ${archived?'archived':''} ${linked?'linked':''}">
     <button class="session-open" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))} · ${esc(s.agent_id||'auto')}${linked?' · 工作包':''}</span></button>
     <div class="session-actions">
       <button title="重命名会话" onclick="renameChatSession('${jsArg(s.id)}',this)">改名</button>
-      <button title="${linked?'已绑定到工作包':'绑定到当前工作包'}" onclick="bindSessionToContextPack('${jsArg(s.id)}',this)" ${linked?'disabled':''}>${linked?'已绑定':'绑定'}</button>
+      <button title="${linked?'已加入工作包':'加入当前工作包'}" onclick="bindSessionToContextPack('${jsArg(s.id)}',this)" ${linked?'disabled':''}>${linked?'已加入':'加入'}</button>
       <button title="${archived?'恢复会话':'归档会话'}" onclick="toggleChatSessionArchive('${jsArg(s.id)}',${archived},this)">${archived?'恢复':'归档'}</button>
     </div>
   </article>`;
@@ -2551,7 +2563,7 @@ function renderSessionList(){
   if(!box) return;
   const filtered=chatSessions.filter(sessionMatches);
   const empty=chatSessionFilter.status==='project'
-    ? emptyState('暂无项目会话','在任一会话卡片点击“绑定”，或加载含来源会话的工作包预设。')
+    ? emptyState('暂无项目会话','在任一会话卡片点击“加入”，或加载含来源会话的工作包预设。')
     : emptyState('暂无匹配会话','调整搜索或切换活跃/归档状态。');
   box.innerHTML=filtered.length?filtered.slice(0,40).map(sessionCard).join(''):empty;
 }
@@ -2611,9 +2623,9 @@ function bindSessionToContextPack(id,btn){
   if(!id) return;
   setBusy(btn,true);
   try{
-    contextPack.sessionId=id;
+    addSessionToContextPack(id);
     contextPack.updatedAt=new Date().toISOString();
-    persistContextPack({toast:'会话已绑定到当前工作包'});
+    persistContextPack({toast:'会话已加入当前工作包'});
   }finally{
     setBusy(btn,false);
   }
