@@ -54,6 +54,8 @@ const CONTEXT_PACK_FILE_CHAR_LIMIT = 12000;
 const CONTEXT_PACK_FILE_BYTES_LIMIT = 262144;
 const CONTEXT_PACK_NOTE_LIMIT = 8;
 const CONTEXT_PACK_NOTE_CHAR_LIMIT = 4000;
+const CONTEXT_PACK_TASK_LIMIT = 12;
+const CONTEXT_PACK_TASK_CHAR_LIMIT = 1200;
 let contextPack = loadContextPack();
 let contextPackPresets = loadContextPackPresets();
 let activeContextPackPresetId = '';
@@ -154,7 +156,7 @@ function compactTags(values,limit=4){
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
 }
 function defaultContextPack(){
-  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',sessionIds:[],localFiles:[],savedNotes:[],toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
+  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',sessionIds:[],localFiles:[],savedNotes:[],projectTasks:[],toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
 }
 function normalizeIdList(list,limit=6){
   return [...new Set(asList(list).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,limit);
@@ -196,6 +198,26 @@ function normalizeContextNote(note={}){
 function normalizeContextNotes(notes){
   return (Array.isArray(notes)?notes:[]).map(normalizeContextNote).filter(note=>note.title&&note.content).slice(0,CONTEXT_PACK_NOTE_LIMIT);
 }
+function contextPackTaskId(title='task'){
+  const stem=String(title||'task').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30)||'task';
+  return `task_${stem}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`;
+}
+function normalizeContextTask(task={}){
+  const title=short(String(task.title||task.prompt||'下一步任务').trim()||'下一步任务',90);
+  return {
+    id:String(task.id||contextPackTaskId(title)).slice(0,90),
+    title,
+    prompt:String(task.prompt||title).slice(0,CONTEXT_PACK_TASK_CHAR_LIMIT),
+    status:['open','done'].includes(task.status)?task.status:'open',
+    source:short(String(task.source||'answer_next_action').trim()||'answer_next_action',50),
+    traceId:String(task.traceId||task.trace_id||'').slice(0,90),
+    sessionId:String(task.sessionId||task.session_id||'').slice(0,90),
+    createdAt:String(task.createdAt||task.created_at||new Date().toISOString()).slice(0,40)
+  };
+}
+function normalizeContextTasks(tasks){
+  return (Array.isArray(tasks)?tasks:[]).map(normalizeContextTask).filter(task=>task.title&&task.prompt).slice(0,CONTEXT_PACK_TASK_LIMIT);
+}
 function normalizeContextPack(pack={}){
   const base=defaultContextPack();
   const next=Object.assign({},base,pack||{});
@@ -211,6 +233,7 @@ function normalizeContextPack(pack={}){
   next.sessionId=String(next.sessionId||next.sessionIds[0]||'').slice(0,90);
   next.localFiles=normalizeContextFiles(next.localFiles);
   next.savedNotes=normalizeContextNotes(next.savedNotes);
+  next.projectTasks=normalizeContextTasks(next.projectTasks);
   next.toolMode=['auto','analysis','sql','codex'].includes(next.toolMode)?next.toolMode:'auto';
   next.evidenceDepth=['standard','full'].includes(next.evidenceDepth)?next.evidenceDepth:'standard';
   next.memoryMode=['default','project'].includes(next.memoryMode)?next.memoryMode:'project';
@@ -254,7 +277,7 @@ function persistContextPackPresets(){
 }
 function contextPackHasContent(pack=contextPack){
   const p=normalizeContextPack(pack);
-  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionIds.length||p.localFiles.length||p.savedNotes.length||(p.includeCanvas&&chatCanvasValue().trim()));
+  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionIds.length||p.localFiles.length||p.savedNotes.length||p.projectTasks.length||(p.includeCanvas&&chatCanvasValue().trim()));
 }
 function asList(value){
   if(Array.isArray(value)) return value;
@@ -930,6 +953,44 @@ function saveAnswerToContextPack(key,btn){
     setBusy(btn,false);
   }
 }
+function answerProjectTaskItems(r,meta={}){
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const sessionId=meta.session_id||activeSessionId||'';
+  const direct=(r?.next_actions||[]).map(action=>({
+    title:action,
+    prompt:`基于上一轮问题“${answerQuestion(meta)}”推进下一步：${action}。请说明执行路径、所需证据、风险边界和完成标准。`,
+    source:'answer_next_action',
+    traceId,
+    sessionId,
+  }));
+  const fallback=answerFollowUpPrompts(r,meta).map(item=>({
+    title:item.label,
+    prompt:item.prompt,
+    source:'suggested_followup',
+    traceId,
+    sessionId,
+  }));
+  return (direct.length?direct:fallback).slice(0,4).map(normalizeContextTask);
+}
+function saveAnswerTasksToContextPack(key,btn){
+  const cached=answerDraftCache[key];
+  if(!cached) return toast('回答上下文已失效，请重新打开会话');
+  const {r,meta}=cached;
+  const tasks=answerProjectTaskItems(r,meta);
+  if(!tasks.length) return toast('没有可加入的下一步任务');
+  setBusy(btn,true);
+  try{
+    contextPack.projectTasks=normalizeContextTasks([...tasks,...normalizeContextPack(contextPack).projectTasks]);
+    tasks.forEach(task=>{
+      if(task.traceId) contextPack.traceIds=normalizeIdList([task.traceId,...contextPack.traceIds],6);
+      if(task.sessionId) addSessionToContextPack(task.sessionId);
+    });
+    contextPack.updatedAt=new Date().toISOString();
+    persistContextPack({toast:`已加入 ${tasks.length} 个项目待办`});
+  }finally{
+    setBusy(btn,false);
+  }
+}
 function reportEvidenceFromAnswer(r,meta={}){
   return [{
     type:'chat_answer',
@@ -984,6 +1045,7 @@ function answerContextActions(r, meta={}, key=''){
     `<button class="answer-tool" data-title="优化问数工作流" data-prompt="${esc(codexPrompt)}" onclick="setCodexDraft(this.dataset.title,this.dataset.prompt)">创建 Codex 任务</button>`,
     key?`<button class="answer-tool" onclick="saveAnswerAsReport('${jsArg(key)}',this)">保存报告</button>`:'',
     key?`<button class="answer-tool" onclick="saveAnswerToContextPack('${jsArg(key)}',this)">存入工作包</button>`:'',
+    key?`<button class="answer-tool" onclick="saveAnswerTasksToContextPack('${jsArg(key)}',this)">加入待办</button>`:'',
     traceId?`<button class="answer-tool" onclick="openEvidence('${jsArg(traceId)}','steps')">定位证据</button>`:'',
     traceId?`<button class="answer-tool" onclick="addTraceToContextPack('${jsArg(traceId)}',this)">加入工作包</button>`:'',
     `<button class="answer-tool ghost-tool" data-copy="${esc(copyText)}" onclick="copyAnswerText(this.dataset.copy,this)">复制</button>`
@@ -2012,13 +2074,14 @@ function contextPackCounts(){
     sessions:p.sessionIds.length,
     files:p.localFiles.length,
     notes:p.savedNotes.length,
+    tasks:p.projectTasks.length,
     instructions:p.instructions.trim()?1:0,
     canvas:p.includeCanvas&&chatCanvasValue().trim()?1:0
   };
 }
 function contextPackSummaryLabel(){
   const counts=contextPackCounts();
-  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.sessions+counts.files+counts.notes+counts.instructions+counts.canvas+(contextPack.agentId?1:0);
+  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.sessions+counts.files+counts.notes+counts.tasks+counts.instructions+counts.canvas+(contextPack.agentId?1:0);
   return total?`${total} 项上下文`:'未捕获';
 }
 function contextPackSummaryDetail(){
@@ -2033,6 +2096,7 @@ function contextPackSummaryDetail(){
   if(counts.traces) parts.push(`${counts.traces} Trace`);
   if(counts.files) parts.push(`${counts.files} 本地资料`);
   if(counts.notes) parts.push(`${counts.notes} 回答摘录`);
+  if(counts.tasks) parts.push(`${counts.tasks} 项目待办`);
   if(counts.canvas) parts.push('Canvas');
   if(counts.sessions) parts.push(`${counts.sessions} 会话`);
   return parts.length?parts.join(' · '):'Project-style local context';
@@ -2055,10 +2119,11 @@ function contextPackPills(){
   p.sessionIds.forEach(id=>pills.push({kind:'session',id,label:'会话',value:id}));
   p.localFiles.forEach(file=>pills.push({kind:'file',id:file.id,label:'本地资料',value:`${file.name} · ${fileSizeLabel(file.size)}`}));
   p.savedNotes.forEach(note=>pills.push({kind:'note',id:note.id,label:'回答摘录',value:note.traceId?`${note.title} · ${note.traceId}`:note.title}));
+  p.projectTasks.forEach(task=>pills.push({kind:'task',id:task.id,label:task.status==='done'?'已完成':'项目待办',value:task.title,done:task.status==='done'}));
   return pills.length?`<div class="context-pack-pills">${pills.map(pill=>`<article class="context-pack-pill">
     <div><small>${esc(pill.label)}</small><b>${esc(short(pill.value,34))}</b></div>
-    <nav aria-label="${esc(pill.label)} 操作"><button type="button" onclick="openContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">打开</button><button type="button" onclick="removeContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">移除</button></nav>
-  </article>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话、添加资产、加入本地资料或存入关键回答后，这里会显示 Agent、数据集、知识库、Trace、报告、会话、资料和摘录线索。</p>`;
+    <nav aria-label="${esc(pill.label)} 操作"><button type="button" onclick="openContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">打开</button>${pill.kind==='task'?`<button type="button" onclick="toggleContextPackTask('${jsArg(pill.id)}')">${pill.done?'恢复':'完成'}</button>`:''}<button type="button" onclick="removeContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">移除</button></nav>
+  </article>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话、添加资产、加入本地资料、存入关键回答或加入项目待办后，这里会显示 Agent、数据集、知识库、Trace、报告、会话、资料、摘录和待办线索。</p>`;
 }
 function contextPackStatusText(){
   return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
@@ -2308,6 +2373,7 @@ function removeContextPackItem(kind,id){
   if(kind==='trace') contextPack.traceIds=removeId(contextPack.traceIds);
   if(kind==='file') contextPack.localFiles=normalizeContextFiles(contextPack.localFiles.filter(file=>file.id!==id));
   if(kind==='note') contextPack.savedNotes=normalizeContextNotes(contextPack.savedNotes.filter(note=>note.id!==id));
+  if(kind==='task') contextPack.projectTasks=normalizeContextTasks(contextPack.projectTasks.filter(task=>task.id!==id));
   if(kind==='session'){
     contextPack.sessionIds=removeId(asList(contextPack.sessionIds));
     contextPack.sessionId=contextPack.sessionIds[0]||'';
@@ -2334,6 +2400,18 @@ function openContextPackItem(kind,id){
     showPage('chat');
     setTimeout(()=>setChatCanvasDraft(note.content,'回答摘录已写入 Canvas'),120);
   }
+  if(kind==='task'){
+    const task=normalizeContextPack(contextPack).projectTasks.find(item=>item.id===id);
+    if(!task) return toast('项目待办不存在');
+    showPage('chat');
+    setTimeout(()=>setChatComposerDraft(task.prompt),120);
+  }
+}
+function toggleContextPackTask(id){
+  const tasks=normalizeContextPack(contextPack).projectTasks.map(task=>task.id===id?Object.assign({},task,{status:task.status==='done'?'open':'done'}):task);
+  contextPack.projectTasks=normalizeContextTasks(tasks);
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'项目待办状态已更新'});
 }
 function addTraceToContextPack(traceId,btn){
   if(!traceId) return;
@@ -2369,6 +2447,10 @@ function contextPackPrompt(){
     lines.push('', '回答摘录：');
     p.savedNotes.forEach(note=>lines.push(`- ${note.title}${note.traceId?` (${note.traceId})`:''}：${short(note.content.replace(/\s+/g,' '),900)}`));
   }
+  if(p.projectTasks.length){
+    lines.push('', '项目待办：');
+    p.projectTasks.forEach(task=>lines.push(`- [${task.status==='done'?'x':' '}] ${task.title}${task.traceId?` (${task.traceId})`:''}：${short(task.prompt.replace(/\s+/g,' '),520)}`));
+  }
   if(p.traceIds.length) lines.push(`Trace：${p.traceIds.join('、')}`);
   if(p.sessionIds.length) lines.push(`来源会话：${p.sessionIds.join('、')}`);
   if(p.includeCanvas&&chatCanvasValue().trim()) lines.push(`Canvas 草稿：${short(chatCanvasValue().trim().replace(/\s+/g,' '),520)}`);
@@ -2386,6 +2468,7 @@ function contextPackCanvasMarkdown(){
   if(p.reportIds.length) lines.push('## 报告',...p.reportIds.map(id=>`- ${contextPackReportTitle(id)} (${id})`),'');
   if(p.localFiles.length) lines.push('## 本地资料',...p.localFiles.flatMap(file=>[`### ${file.name}`,`大小：${fileSizeLabel(file.size)}；类型：${file.type}`,'',file.content.slice(0,3000),'']),'');
   if(p.savedNotes.length) lines.push('## 回答摘录',...p.savedNotes.flatMap(note=>[`### ${note.title}`,`来源：${note.source}${note.traceId?`；Trace：${note.traceId}`:''}${note.sessionId?`；会话：${note.sessionId}`:''}`,'',note.content.slice(0,3000),'']),'');
+  if(p.projectTasks.length) lines.push('## 项目待办',...p.projectTasks.map(task=>`- [${task.status==='done'?'x':' '}] ${task.title}${task.traceId?` (${task.traceId})`:''}\n  - ${task.prompt}`),'');
   if(p.traceIds.length) lines.push('## Trace',...p.traceIds.map(id=>`- ${id}`),'');
   if(p.sessionIds.length) lines.push('## 来源会话',...p.sessionIds.map(id=>`- ${id}`),'');
   if(p.includeCanvas&&chatCanvasValue().trim()) lines.push('## Canvas 草稿',chatCanvasValue().trim().slice(0,3000),'');
@@ -2402,6 +2485,7 @@ function contextPackPayload(){
     report_ids:p.reportIds,
     local_files:p.localFiles.map(file=>({id:file.id,name:file.name,type:file.type,size:file.size,content:file.content.slice(0,6000),created_at:file.createdAt})),
     saved_notes:p.savedNotes.map(note=>({id:note.id,title:note.title,source:note.source,question:note.question,content:note.content.slice(0,3000),trace_id:note.traceId,session_id:note.sessionId,created_at:note.createdAt})),
+    project_tasks:p.projectTasks.map(task=>({id:task.id,title:task.title,prompt:task.prompt,status:task.status,source:task.source,trace_id:task.traceId,session_id:task.sessionId,created_at:task.createdAt})),
     trace_ids:p.traceIds,
     session_id:p.sessionId||null,
     session_ids:p.sessionIds,

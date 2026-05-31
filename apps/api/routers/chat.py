@@ -52,6 +52,25 @@ def _context_pack_saved_note_summary(context: dict | None) -> list[dict]:
     return summary
 
 
+def _context_pack_project_task_summary(context: dict | None) -> list[dict]:
+    context_pack = (context or {}).get("context_pack") or {}
+    tasks = context_pack.get("project_tasks") or []
+    summary = []
+    for item in tasks[:12]:
+        if not isinstance(item, dict):
+            continue
+        prompt = str(item.get("prompt") or "")
+        summary.append({
+            "id": str(item.get("id") or "")[:90],
+            "title": str(item.get("title") or "项目待办")[:120],
+            "status": str(item.get("status") or "open")[:20],
+            "source": str(item.get("source") or "")[:50],
+            "trace_id": str(item.get("trace_id") or "")[:90],
+            "prompt_chars": len(prompt),
+        })
+    return summary
+
+
 @router.post("/query")
 def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current_user)):
     check_rate_limit(f"chat:{user['id']}", settings.chat_rate_limit_per_minute)
@@ -95,6 +114,15 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
             "saved_note_context",
             {"saved_notes_count": len(saved_note_summary), "has_saved_note_content": True},
             {"saved_notes": saved_note_summary, "temporary_chat": temporary_chat},
+        )
+    project_task_summary = _context_pack_project_task_summary(payload.context)
+    if project_task_summary:
+        trace_service.add_step(
+            trace_id,
+            "context_pack",
+            "project_task_context",
+            {"project_tasks_count": len(project_task_summary), "has_project_task_prompts": True},
+            {"project_tasks": project_task_summary, "temporary_chat": temporary_chat},
         )
     start = time.time()
     try:

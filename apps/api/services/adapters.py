@@ -60,6 +60,17 @@ def _redact_context_pack_content(value: Any) -> Any:
             safe_item["content_redacted"] = bool(content)
             safe_notes.append(safe_item)
         context_pack["saved_notes"] = safe_notes
+    if isinstance(context_pack, dict) and isinstance(context_pack.get("project_tasks"), list):
+        safe_tasks = []
+        for item in context_pack["project_tasks"]:
+            if not isinstance(item, dict):
+                continue
+            safe_item = dict(item)
+            prompt = str(safe_item.pop("prompt", "") or "")
+            safe_item["prompt_chars"] = len(prompt)
+            safe_item["prompt_redacted"] = bool(prompt)
+            safe_tasks.append(safe_item)
+        context_pack["project_tasks"] = safe_tasks
     return redacted
 
 
