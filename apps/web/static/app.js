@@ -3,6 +3,8 @@ let currentUser = null;
 let agents = [];
 let datasets = [];
 let metrics = [];
+let dataCatalogFilterState = {q:'', domain:'all', classification:'all', refresh:'all'};
+let activeDatasetId = '';
 let activePage = 'dashboard';
 let currentTrace = null;
 let lastAnalysisTaskId = '';
@@ -27,6 +29,7 @@ let activePanelId = '';
 let evalSetsCache = [];
 let evalCaseCache = {};
 let activeEvalSetId = '';
+let evalFilterState = {q:'', domain:'all', tag:'all'};
 let semanticFilterState = {q:'', domain:''};
 let reportsCache = [];
 let reportFilterState = {q:'', status:'all', type:'all'};
@@ -164,8 +167,42 @@ function renderTable(rows, opts=80){
   const meta=cfg.meta===false?'':`<div class="table-meta"><span>${visibleRows.length} / ${rows.length} rows</span><span>· ${cols.length} columns</span>${rows.length>limit?`<span>· 已截断到 ${limit} 行</span>`:''}</div>`;
   return `<div class="table-shell">${meta}<div class="table-wrap"><table class="${cls}"><thead><tr>${cols.map(c=>`<th>${esc((cfg.labels&&cfg.labels[c])||displayKey(c))}</th>`).join('')}</tr></thead><tbody>${visibleRows.map(r=>`<tr>${cols.map(c=>`<td>${cellHtml(c,r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`;
 }
+function metricsForDataset(d){
+  return metrics.filter(m=>m.dataset_id===d.id||m.dataset_name===d.name);
+}
+function datasetSearchText(d){
+  const related=metricsForDataset(d);
+  return [d.id,d.name,d.physical_table,d.business_domain,d.description,d.data_classification,d.refresh_mode,d.status,...related.flatMap(m=>[m.name,m.code,m.formula,m.status])].filter(Boolean).join(' ').toLowerCase();
+}
+function datasetMatches(d){
+  const q=(dataCatalogFilterState.q||'').trim().toLowerCase();
+  const domain=dataCatalogFilterState.domain||'all';
+  const classification=dataCatalogFilterState.classification||'all';
+  const refresh=dataCatalogFilterState.refresh||'all';
+  return (domain==='all'||d.business_domain===domain) &&
+    (classification==='all'||(d.data_classification||'internal')===classification) &&
+    (refresh==='all'||(d.refresh_mode||'unknown')===refresh) &&
+    (!q||datasetSearchText(d).includes(q));
+}
+function dataCatalogFilterOptions(key,items){
+  return items.map(([value,label])=>`<option value="${esc(value)}" ${dataCatalogFilterState[key]===value?'selected':''}>${esc(label)}</option>`).join('');
+}
+function dataCatalogFilterBar(filtered=[]){
+  const domains=[['all','全部业务域'],...[...new Set(datasets.map(d=>d.business_domain).filter(Boolean))].sort().map(v=>[v,v])];
+  const classes=[['all','全部分级'],...[...new Set(datasets.map(d=>d.data_classification||'internal').filter(Boolean))].sort().map(v=>[v,displayValue(v)])];
+  const refreshModes=[['all','全部刷新'],...[...new Set(datasets.map(d=>d.refresh_mode||'unknown').filter(Boolean))].sort().map(v=>[v,displayValue(v)])];
+  return `<div class="data-catalog-filter">
+    <label><span>搜索数据资产</span><input id="dataCatalogSearch" value="${esc(dataCatalogFilterState.q)}" placeholder="名称、表名、字段口径、指标" oninput="setDataCatalogFilter('q',this.value)" aria-label="搜索数据资产"/></label>
+    <label><span>业务域</span><select id="dataCatalogDomainFilter" onchange="setDataCatalogFilter('domain',this.value)" aria-label="筛选业务域">${dataCatalogFilterOptions('domain',domains)}</select></label>
+    <label><span>分级</span><select id="dataCatalogClassFilter" onchange="setDataCatalogFilter('classification',this.value)" aria-label="筛选数据分级">${dataCatalogFilterOptions('classification',classes)}</select></label>
+    <label><span>刷新</span><select id="dataCatalogRefreshFilter" onchange="setDataCatalogFilter('refresh',this.value)" aria-label="筛选刷新模式">${dataCatalogFilterOptions('refresh',refreshModes)}</select></label>
+    <button class="report-action" onclick="resetDataCatalogFilters()">重置</button>
+    <small id="dataCatalogResultCount" class="asset-filter-count">显示 ${filtered.length} / ${datasets.length}</small>
+  </div>`;
+}
 function datasetCard(d){
-  return `<div class="asset-card"><div class="asset-card-head"><div><b>${esc(d.name)}</b><span>${esc(d.physical_table||d.id)}</span></div>${statusTag(d.status)}</div><p>${esc(d.description||'暂无说明')}</p><div>${tag(d.business_domain||'Domain')}${statusTag(d.data_classification)}${statusTag(d.refresh_mode)}</div><div class="asset-actions"><button class="report-action" onclick="openDatasetDetail('${jsArg(d.id)}',this)">详情</button><button class="report-action" onclick="dataTab('query',document.querySelector('#page-dataops .tabs button[data-tab=&quot;query&quot;]'));setTimeout(()=>{document.getElementById('qDataset').value='${jsArg(d.id)}';syncWorkbenchSql()},60)">查询</button><button class="report-action" onclick="dataTab('profile',document.querySelector('#page-dataops .tabs button[data-tab=&quot;profile&quot;]'));setTimeout(()=>{document.getElementById('profileDataset').value='${jsArg(d.id)}'},60)">画像</button></div></div>`;
+  const related=metricsForDataset(d);
+  return `<div class="asset-card ${d.id===activeDatasetId?'active':''}" data-dataset-id="${esc(d.id)}"><div class="asset-card-head"><div><b>${esc(d.name)}</b><span>${esc(d.physical_table||d.id)}</span></div>${statusTag(d.status)}</div><p>${esc(d.description||'暂无说明')}</p><div>${tag(d.business_domain||'Domain')}${statusTag(d.data_classification)}${statusTag(d.refresh_mode)}${related.length?tag(`${related.length} metrics`,'green'):''}</div><div class="asset-actions"><button class="report-action" onclick="openDatasetDetail('${jsArg(d.id)}',this)">详情</button><button class="report-action" onclick="dataTab('query',document.querySelector('#page-dataops .tabs button[data-tab=&quot;query&quot;]'));setTimeout(()=>{document.getElementById('qDataset').value='${jsArg(d.id)}';syncWorkbenchSql()},60)">查询</button><button class="report-action" onclick="dataTab('profile',document.querySelector('#page-dataops .tabs button[data-tab=&quot;profile&quot;]'));setTimeout(()=>{document.getElementById('profileDataset').value='${jsArg(d.id)}'},60)">画像</button></div></div>`;
 }
 function promptButton(q){return `<button class="prompt-pill" onclick="askPreset('${jsArg(q)}')">${esc(q)}</button>`}
 function percent(v){return Math.max(0,Math.min(100,Math.round(Number(v||0)*100)))}
@@ -456,12 +493,41 @@ function resetKnowledgeFilters(){
   renderKnowledgeList();
 }
 function evalSetCard(s,cases=[]){
-  const tags=[...new Set(cases.flatMap(c=>Array.isArray(c.tags)?c.tags:[]))];
+  const tags=evalSetTags(s,cases);
   return `<button class="eval-card ${s.id===activeEvalSetId?'active':''}" data-eval-set-id="${esc(s.id)}" onclick="selectEvalSet('${jsArg(s.id)}')">
     <div class="eval-card-head"><div><span>${esc(s.business_domain||'Evaluation')}</span><b>${esc(s.name||s.id)}</b></div>${tag(`${cases.length} cases`,'green')}</div>
     <p>${esc(s.description||'暂无说明')}</p>
     <div class="eval-tags">${compactTags(tags,5)}</div>
   </button>`;
+}
+function evalSetTags(s,cases=[]){
+  return [...new Set(cases.flatMap(c=>asList(c.tags)).concat([s.business_domain]).filter(Boolean))];
+}
+function evalSetSearchText(s,cases=[]){
+  return [s.id,s.name,s.business_domain,s.description,s.owner_id,...cases.flatMap(c=>[c.id,c.question,c.expected_answer,c.expected_sql,...asList(c.tags)])].filter(Boolean).join(' ').toLowerCase();
+}
+function evalSetMatches(s){
+  const cases=evalCaseCache[s.id]||[];
+  const q=(evalFilterState.q||'').trim().toLowerCase();
+  const domain=evalFilterState.domain||'all';
+  const selectedTag=evalFilterState.tag||'all';
+  const tags=evalSetTags(s,cases);
+  return (domain==='all'||s.business_domain===domain) && (selectedTag==='all'||tags.includes(selectedTag)) && (!q||evalSetSearchText(s,cases).includes(q));
+}
+function evalFilterOptions(key,items){
+  return items.map(([value,label])=>`<option value="${esc(value)}" ${evalFilterState[key]===value?'selected':''}>${esc(label)}</option>`).join('');
+}
+function evalFilterBar(filtered=[]){
+  const allCases=Object.values(evalCaseCache).flat();
+  const domains=[['all','全部业务域'],...[...new Set(evalSetsCache.map(s=>s.business_domain).filter(Boolean))].sort().map(v=>[v,v])];
+  const tags=[['all','全部标签'],...[...new Set(allCases.flatMap(c=>asList(c.tags)).filter(Boolean))].sort().map(v=>[v,v])];
+  return `<div class="eval-filter-bar">
+    <label><span>搜索评测资产</span><input id="evalSearch" value="${esc(evalFilterState.q)}" placeholder="评测集、问题、SQL、标签" oninput="setEvalFilter('q',this.value)" aria-label="搜索评测资产"/></label>
+    <label><span>业务域</span><select id="evalDomainFilter" onchange="setEvalFilter('domain',this.value)" aria-label="筛选评测业务域">${evalFilterOptions('domain',domains)}</select></label>
+    <label><span>标签</span><select id="evalTagFilter" onchange="setEvalFilter('tag',this.value)" aria-label="筛选评测标签">${evalFilterOptions('tag',tags)}</select></label>
+    <button class="report-action" onclick="resetEvalFilters()">重置</button>
+    <small id="evalResultCount" class="eval-filter-count">显示 ${filtered.length} / ${evalSetsCache.length}</small>
+  </div>`;
 }
 function evalResultPayload(row){
   if(!row) return {};
@@ -1888,18 +1954,74 @@ function panelHtml(panel){
   </div>`;
 }
 
+function renderDatasetCatalog(){
+  const filtered=datasets.filter(datasetMatches);
+  const grid=document.getElementById('dataCatalogGrid');
+  if(grid) grid.innerHTML=filtered.length?filtered.map(datasetCard).join(''):emptyState('没有匹配数据集','调整搜索、业务域、分级或刷新模式。');
+  const count=document.getElementById('dataCatalogResultCount');
+  if(count) count.innerText=`显示 ${filtered.length} / ${datasets.length}`;
+  const metricBox=document.getElementById('dataCatalogMetricsTable');
+  if(metricBox){
+    const ids=new Set(filtered.map(d=>d.id));
+    const names=new Set(filtered.map(d=>d.name));
+    const scopedMetrics=metrics.filter(m=>ids.has(m.dataset_id)||names.has(m.dataset_name));
+    metricBox.innerHTML=renderTable(scopedMetrics,{columns:['name','code','dataset_name','formula','time_grain','status'],limit:80,emptyTitle:'暂无匹配指标',emptyText:'当前筛选结果下没有关联指标口径。'});
+  }
+  if(activeDatasetId && !filtered.some(d=>d.id===activeDatasetId)){
+    activeDatasetId=filtered[0]?.id||'';
+    if(activeDatasetId) openDatasetDetail(activeDatasetId,null).catch(()=>{});
+    else{
+      const box=document.getElementById('datasetDetail');
+      if(box) box.innerHTML=emptyState('没有匹配数据集','调整筛选后会恢复数据集详情。');
+    }
+  }else if(!activeDatasetId && filtered[0]){
+    activeDatasetId=filtered[0].id;
+    openDatasetDetail(activeDatasetId,null).catch(()=>{});
+  }
+}
+function setDataCatalogFilter(key,value){
+  dataCatalogFilterState[key]=value;
+  renderDatasetCatalog();
+}
+function resetDataCatalogFilters(){
+  dataCatalogFilterState={q:'',domain:'all',classification:'all',refresh:'all'};
+  const q=document.getElementById('dataCatalogSearch');
+  if(q) q.value='';
+  ['dataCatalogDomainFilter','dataCatalogClassFilter','dataCatalogRefreshFilter'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el) el.value='all';
+  });
+  renderDatasetCatalog();
+}
+function setDatasetChatDraft(id){
+  const dataset=datasets.find(d=>d.id===id)||{id,name:id};
+  setChatDraft(`基于数据集“${dataset.name||id}”回答：这个数据集能支持哪些经营分析？请给出关键指标、可追问问题和需要注意的数据分级。`,'agent_router',id);
+}
+function setDatasetAnalysisDraft(id){
+  const dataset=datasets.find(d=>d.id===id)||{id,name:id};
+  setAnalysisDraft(`围绕数据集“${dataset.name||id}”做深度研究：梳理可回答的业务问题、关联指标、字段质量风险、敏感字段处理和下一步治理建议。`,'agent_business_analysis');
+}
 async function openDatasetDetail(id,btn){
   const box=document.getElementById('datasetDetail');
   if(!box) return;
+  activeDatasetId=id;
+  document.querySelectorAll('.asset-card[data-dataset-id]').forEach(card=>card.classList.toggle('active',card.dataset.datasetId===id));
   setBusy(btn,true);
   box.innerHTML=inlineLoading('正在读取数据集字段和操作入口');
   try{
     const dataset=datasets.find(d=>d.id===id)||{id};
     const fields=await api('/api/datasets/'+id+'/fields').catch(()=>[]);
     const relatedMetrics=metrics.filter(m=>m.dataset_id===id||m.dataset_name===dataset.name);
+    const datasetTitle=dataset.name||id;
+    const contextActions=contextActionStrip([
+      {label:'用此数据集问数',onclick:`setDatasetChatDraft('${jsArg(id)}')`},
+      {label:'转深度研究',onclick:`setDatasetAnalysisDraft('${jsArg(id)}')`},
+      {label:'创建治理任务',onclick:`setCodexDraft('${jsArg(`治理数据集：${datasetTitle}`)}','${jsArg(`检查数据集 ${id} 的目录展示、字段说明、指标口径、数据分级、SQL Guard、画像、质量规则和 Trace 证据链，保持 RBAC、masking 和审计能力不退化。`)}')`}
+    ]);
     box.innerHTML=`<div class="dataset-detail">
       <div class="card-heading"><div><h3>${esc(dataset.name||id)}</h3><p class="muted">${esc(dataset.physical_table||id)} · ${esc(dataset.business_domain||'-')}</p></div>${statusTag(dataset.data_classification||'internal')}</div>
       <p>${esc(dataset.description||'暂无数据集说明')}</p>
+      ${contextActions}
       <div class="dataset-actions"><button onclick="dataTab('query',document.querySelector('#page-dataops .tabs button[data-tab=&quot;query&quot;]'));setTimeout(()=>{document.getElementById('qDataset').value='${jsArg(id)}';syncWorkbenchSql()},60)">打开 SQL Workbench</button><button class="secondary" onclick="dataTab('profile',document.querySelector('#page-dataops .tabs button[data-tab=&quot;profile&quot;]'));setTimeout(()=>{document.getElementById('profileDataset').value='${jsArg(id)}'},60)">生成画像</button><button class="ghost" onclick="dataTab('quality',document.querySelector('#page-dataops .tabs button[data-tab=&quot;quality&quot;]'));setTimeout(()=>{const q=document.getElementById('qualityDataset'); if(q) q.value='${jsArg(id)}'},80)">运行质量规则</button></div>
       <div class="metric-grid tight">${metricCard('字段',fields.length,'已登记字段')}${metricCard('指标',relatedMetrics.length,'关联口径')}${metricCard('刷新',dataset.refresh_mode||'-','数据刷新策略')}${metricCard('分级',dataset.data_classification||'-','权限和 masking 输入')}</div>
       <h4>字段</h4>${renderTable(fields,{columns:['field_name','display_name','data_type','description','is_sensitive','masking_policy'],compact:true,limit:60})}
@@ -1915,7 +2037,7 @@ async function renderDataOps(){
   dataTab('catalog',document.querySelector('#page-dataops .tabs button[data-tab="catalog"]'));
 }
 async function dataTab(name,btn){document.querySelectorAll('#page-dataops .tabs button').forEach(b=>b.classList.remove('active')); if(btn)btn.classList.add('active'); const box=document.getElementById('dataTab');
-  if(name==='catalog'){box.innerHTML=`<div class="metric-grid tight">${metricCard('数据集',datasets.length,'已注册业务数据资产')}${metricCard('指标',metrics.length,'可复用口径与语义')}${metricCard('敏感数据集',datasets.filter(d=>d.data_classification==='confidential').length,'需保持 masking 与 RBAC')}${metricCard('业务域',new Set(datasets.map(d=>d.business_domain).filter(Boolean)).size,'跨域治理范围')}</div><div class="data-catalog-workspace section-gap"><section><div class="asset-grid">${datasets.map(datasetCard).join('')}</div><div class="card section-gap"><h3>指标口径</h3>${renderTable(metrics,{columns:['name','code','dataset_name','formula','time_grain','status'],limit:80})}</div></section><aside id="datasetDetail" class="dataset-detail-card">${emptyState('选择数据集','点击数据集卡片的详情按钮查看字段、指标和后续动作。')}</aside></div>`; if(datasets[0]) openDatasetDetail(datasets[0].id,null).catch(()=>{});}
+  if(name==='catalog'){const filtered=datasets.filter(datasetMatches);activeDatasetId=activeDatasetId||filtered[0]?.id||datasets[0]?.id||'';box.innerHTML=`<div class="metric-grid tight">${metricCard('数据集',datasets.length,'已注册业务数据资产')}${metricCard('指标',metrics.length,'可复用口径与语义')}${metricCard('敏感数据集',datasets.filter(d=>d.data_classification==='confidential').length,'需保持 masking 与 RBAC')}${metricCard('业务域',new Set(datasets.map(d=>d.business_domain).filter(Boolean)).size,'跨域治理范围')}</div><div class="data-catalog-workspace section-gap"><section><div class="section-title"><div><h2>数据资产库</h2><p>像会话历史一样搜索和筛选数据上下文，并把关联指标同步到下方口径表。</p></div>${tag(`${datasets.length} datasets`)}</div>${dataCatalogFilterBar(filtered)}<div id="dataCatalogGrid" class="asset-grid"></div><div class="card section-gap"><div class="card-heading"><h3>关联指标口径</h3>${tag('scoped by catalog')}</div><div id="dataCatalogMetricsTable"></div></div></section><aside id="datasetDetail" class="dataset-detail-card">${emptyState('选择数据集','点击数据集卡片的详情按钮查看字段、指标和后续动作。')}</aside></div>`; renderDatasetCatalog(); if(activeDatasetId) openDatasetDetail(activeDatasetId,null).catch(()=>{});}
   if(name==='query'){const defaultDs=defaultQueryDataset();box.innerHTML=`<div class="dataops-trace-layout"><div class="card form-shell"><h3>只读 SQL Workbench</h3><p class="muted">查询会经过 SQL Guard，只允许只读语句，结果保留 Trace。</p><label class="field-label" for="qDataset">数据集</label><select id="qDataset" onchange="syncWorkbenchSql()">${datasetOptions(defaultDs)}</select><label class="field-label" for="qSql">SQL</label><textarea id="qSql">${esc(sampleSqlForDataset(defaultDs))}</textarea><button onclick="runSqlWorkbench(this)">执行查询</button><div id="sqlResult"></div></div>${traceDrawer('dataTraceBox','SQL Guard 证据','复核只读 SQL、权限检查和执行步骤。')}<div class="card guard-card"><h3>执行护栏</h3><div class="stepper"><span>Read-only SQL</span><span>SQL Guard</span><span>Dataset Masking</span><span>Trace</span></div><p>适合验证业务口径、抽样分析和面板 SQL，不用于写入或绕过权限。</p></div></div>`;}
   if(name==='profile'){box.innerHTML=`<div class="dataops-trace-layout"><div class="card form-shell"><h3>数据画像</h3><p class="muted">快速查看行数、字段数量、字段画像和样本记录。</p><label class="field-label" for="profileDataset">数据集</label><select id="profileDataset">${datasetOptions()}</select><button onclick="runProfile(this)">生成画像</button><div id="profileResult"></div></div>${traceDrawer('dataTraceBox','画像证据','查看画像任务、权限范围和执行输出。')}</div>`;}
   if(name==='quality'){const rules=await api('/api/data/quality-rules').catch(()=>[]);box.innerHTML=`<div class="dataops-trace-layout"><div class="card"><h3>数据业务规则</h3>${renderTable(rules,{columns:['name','dataset_name','severity','status','description'],limit:80})}<div class="form-row section-gap"><select id="qualityDataset"><option value="">全部数据集</option>${datasetOptions()}</select><button onclick="runQuality(this)">运行规则</button></div><div id="qualityResult"></div></div>${traceDrawer('dataTraceBox','质量证据','复核运行规则、失败行统计和审计 Trace。')}</div>`;}
@@ -2329,18 +2451,20 @@ async function renderEvals(){
   const caseLists=await Promise.all(sets.map(s=>api(`/api/eval-sets/${s.id}/cases`).catch(()=>[])));
   evalSetsCache=sets;
   evalCaseCache=Object.fromEntries(sets.map((s,i)=>[s.id,caseLists[i]||[]]));
-  activeEvalSetId=activeEvalSetId || sets[0]?.id || '';
+  const filtered=sets.filter(evalSetMatches);
+  activeEvalSetId=activeEvalSetId && filtered.some(s=>s.id===activeEvalSetId) ? activeEvalSetId : filtered[0]?.id || sets[0]?.id || '';
   const totalCases=caseLists.flat().length;
   document.getElementById('page-evals').innerHTML=`${pageHeader('评测中心','用评测集对 Agent 回答质量、路由、SQL Guard 和回归结果做持续检查。',['Eval sets','Regression','Quality gate'])}
   <div class="metric-grid tight">${metricCard('评测集',sets.length,'覆盖业务问数和多 Agent 能力')}${metricCard('用例',totalCases,'问题、期望 SQL 和标签')}${metricCard('可测 Agent',agents.length,'当前权限范围内')}${metricCard('默认门槛','0.80','建议作为回归判定线')}</div>
   <div class="eval-workstation section-gap">
-    <section class="ops-main"><div class="section-title"><div><h2>评测资产</h2><p>先看覆盖范围，再选择评测集与 Agent 运行回归。</p></div>${tag(`${totalCases} cases`)}</div><div class="eval-grid">${sets.length?sets.map((s,i)=>evalSetCard(s,caseLists[i]||[])).join(''):emptyState('暂无评测集','创建评测集后可用于问数、路由和 SQL Guard 回归。')}</div><div id="evalCasePreview" class="section-gap">${evalCasePreviewHtml(activeEvalSetId)}</div></section>
+    <section class="ops-main"><div class="section-title"><div><h2>评测资产库</h2><p>像项目上下文一样筛选回归套件、定位用例，并把关键问题直接回放到问数或工程任务。</p></div>${tag(`${totalCases} cases`)}</div>${evalFilterBar(filtered)}<div id="evalSetGrid" class="eval-grid"></div><div id="evalCasePreview" class="section-gap">${evalCasePreviewHtml(activeEvalSetId)}</div></section>
     <aside class="eval-side">
       <div class="card form-shell eval-runner"><h3>运行评测</h3><p class="muted">选择评测集和 Agent，生成结果明细；运行会写入 Trace 与审计。</p><label class="field-label" for="evalSet">评测集</label><select id="evalSet" onchange="selectEvalSet(this.value)">${evalSetOptions(sets,activeEvalSetId)}</select><label class="field-label" for="evalAgent">Agent</label><select id="evalAgent">${agentOptions()}</select><button onclick="runEval(this)">运行评测</button><div id="evalResult"></div></div>
       <div class="card form-shell eval-create-card"><h3>创建评测集</h3><p class="muted">把新的业务场景沉淀为可重复运行的回归套件。</p><label class="field-label" for="evalSetName">名称</label><input id="evalSetName" value="经营分析回归集"/><div class="form-row"><div><label class="field-label" for="evalSetDomain">业务域</label><input id="evalSetDomain" value="Business"/></div><button onclick="createEvalSet(this)">创建</button></div><label class="field-label" for="evalSetDescription">说明</label><textarea id="evalSetDescription">覆盖常见经营问数、SQL Guard、图表和 Trace 证据链。</textarea><div id="evalSetCreateResult"></div></div>
       <div class="card form-shell eval-create-card"><h3>添加用例</h3><p class="muted">一条用例就是一个可回放问题，可带期望 SQL 与标签。</p><label class="field-label" for="evalCaseSet">目标评测集</label><select id="evalCaseSet">${evalSetOptions(sets,activeEvalSetId)}</select><label class="field-label" for="evalCaseQuestion">问题</label><textarea id="evalCaseQuestion">按渠道统计本月收入，并说明最高渠道。</textarea><label class="field-label" for="evalCaseSql">期望 SQL</label><textarea id="evalCaseSql">${esc(sampleSqlForDataset(defaultQueryDataset()))}</textarea><input id="evalCaseTags" value="收入, SQL Guard, Trace" aria-label="标签"/><button onclick="createEvalCase(this)">添加用例</button><div id="evalCaseCreateResult"></div></div>
     </aside>
   </div>`;
+  renderEvalDirectory();
 }
 function evalSetOptions(sets=[],selected=''){
   return sets.length?sets.map(s=>`<option value="${esc(s.id)}" ${s.id===selected?'selected':''}>${esc(s.name)}</option>`).join(''):'<option value="">暂无评测集</option>';
@@ -2349,7 +2473,51 @@ function evalCasePreviewHtml(setId){
   const set=evalSetsCache.find(s=>s.id===setId);
   const cases=evalCaseCache[setId]||[];
   if(!setId) return emptyState('未选择评测集','创建或选择评测集后会显示用例清单。');
-  return `<div class="eval-case-preview"><div class="card-heading"><div><h3>${esc(set?.name||setId)}</h3><p class="muted">${esc(set?.description||'暂无说明')}</p></div>${tag(`${cases.length} cases`,'green')}</div>${cases.length?renderTable(cases,{columns:['question','expected_sql','tags'],limit:80,compact:true}):emptyState('暂无用例','在右侧添加第一条业务问题。')}</div>`;
+  return `<div class="eval-case-preview"><div class="card-heading"><div><h3>${esc(set?.name||setId)}</h3><p class="muted">${esc(set?.description||'暂无说明')}</p></div>${tag(`${cases.length} cases`,'green')}</div><div class="eval-case-list">${cases.length?cases.map((c,i)=>evalCaseCard(c,i,setId)).join(''):emptyState('暂无用例','在右侧添加第一条业务问题。')}</div></div>`;
+}
+function evalCaseCard(c,index,setId){
+  const tags=asList(c.tags);
+  const expected=c.expected_sql||c.expected_answer||'尚未维护期望 SQL 或答案';
+  return `<article class="eval-case-card">
+    <div class="eval-case-head"><span>${String(index+1).padStart(2,'0')}</span><div><b>${esc(c.question||c.id)}</b><p>${esc(short(expected,110))}</p></div></div>
+    <div class="eval-tags">${compactTags(tags,5)}</div>
+    <div class="eval-actions"><button class="report-action" onclick="setEvalCaseChatDraft('${jsArg(c.question||'')}', '${jsArg(setId)}')">回放问数</button><button class="report-action" onclick="setEvalCaseCodexDraft('${jsArg(c.id)}','${jsArg(c.question||'')}', '${jsArg(setId)}')">创建修复任务</button></div>
+  </article>`;
+}
+function renderEvalDirectory(){
+  const filtered=evalSetsCache.filter(evalSetMatches);
+  const grid=document.getElementById('evalSetGrid');
+  if(grid) grid.innerHTML=filtered.length?filtered.map(s=>evalSetCard(s,evalCaseCache[s.id]||[])).join(''):emptyState('没有匹配评测集','调整搜索、业务域或标签筛选。');
+  const count=document.getElementById('evalResultCount');
+  if(count) count.innerText=`显示 ${filtered.length} / ${evalSetsCache.length}`;
+  if(activeEvalSetId && !filtered.some(s=>s.id===activeEvalSetId)){
+    activeEvalSetId=filtered[0]?.id||'';
+    const preview=document.getElementById('evalCasePreview');
+    if(preview) preview.innerHTML=activeEvalSetId?evalCasePreviewHtml(activeEvalSetId):emptyState('没有匹配评测集','调整筛选后会恢复用例预览。');
+  }else if(!activeEvalSetId && filtered[0]){
+    activeEvalSetId=filtered[0].id;
+  }
+  if(activeEvalSetId) selectEvalSet(activeEvalSetId);
+}
+function setEvalFilter(key,value){
+  evalFilterState[key]=value;
+  renderEvalDirectory();
+}
+function resetEvalFilters(){
+  evalFilterState={q:'',domain:'all',tag:'all'};
+  const q=document.getElementById('evalSearch');
+  if(q) q.value='';
+  const domain=document.getElementById('evalDomainFilter');
+  if(domain) domain.value='all';
+  const tagFilter=document.getElementById('evalTagFilter');
+  if(tagFilter) tagFilter.value='all';
+  renderEvalDirectory();
+}
+function setEvalCaseChatDraft(question,setId=''){
+  setChatDraft(`回放评测用例${setId?`（${setId}）`:''}：${question}`,'agent_router');
+}
+function setEvalCaseCodexDraft(caseId,question,setId=''){
+  setCodexDraft(`修复评测用例：${caseId||'eval case'}`,`围绕评测集 ${setId||'-'} 的用例 ${caseId||'-'} 检查问数、路由、SQL Guard、Trace 证据和前端结果展示。问题：${question||'-'}。保持 RBAC、审计和评测记录不退化。`);
 }
 function selectEvalSet(id){
   activeEvalSetId=id;
