@@ -139,7 +139,7 @@ function compactTags(values,limit=4){
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
 }
 function defaultContextPack(){
-  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',toolMode:'auto',evidenceDepth:'standard',updatedAt:''};
+  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
 }
 function normalizeIdList(list,limit=6){
   return [...new Set(asList(list).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,limit);
@@ -157,6 +157,8 @@ function normalizeContextPack(pack={}){
   next.sessionId=String(next.sessionId||'').slice(0,90);
   next.toolMode=['auto','analysis','sql','codex'].includes(next.toolMode)?next.toolMode:'auto';
   next.evidenceDepth=['standard','full'].includes(next.evidenceDepth)?next.evidenceDepth:'standard';
+  next.memoryMode=['default','project'].includes(next.memoryMode)?next.memoryMode:'project';
+  next.includeCanvas=Boolean(next.includeCanvas);
   next.updatedAt=String(next.updatedAt||'').slice(0,40);
   return next;
 }
@@ -170,7 +172,7 @@ function loadContextPack(){
 }
 function contextPackHasContent(pack=contextPack){
   const p=normalizeContextPack(pack);
-  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionId);
+  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionId||(p.includeCanvas&&chatCanvasValue().trim()));
 }
 function asList(value){
   if(Array.isArray(value)) return value;
@@ -1554,23 +1556,26 @@ function contextPackCounts(){
     knowledge:p.knowledgeBaseIds.length,
     reports:p.reportIds.length,
     traces:p.traceIds.length,
-    instructions:p.instructions.trim()?1:0
+    instructions:p.instructions.trim()?1:0,
+    canvas:p.includeCanvas&&chatCanvasValue().trim()?1:0
   };
 }
 function contextPackSummaryLabel(){
   const counts=contextPackCounts();
-  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.instructions+(contextPack.agentId?1:0)+(contextPack.sessionId?1:0);
+  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.instructions+counts.canvas+(contextPack.agentId?1:0)+(contextPack.sessionId?1:0);
   return total?`${total} 项上下文`:'未捕获';
 }
 function contextPackSummaryDetail(){
   const counts=contextPackCounts();
   const parts=[];
+  parts.push(normalizeContextPack(contextPack).memoryMode==='project'?'项目记忆':'默认记忆');
   if(counts.instructions) parts.push('指令');
   if(contextPack.agentId) parts.push('Agent');
   if(counts.datasets) parts.push(`${counts.datasets} 数据集`);
   if(counts.knowledge) parts.push(`${counts.knowledge} 知识库`);
   if(counts.reports) parts.push(`${counts.reports} 报告`);
   if(counts.traces) parts.push(`${counts.traces} Trace`);
+  if(counts.canvas) parts.push('Canvas');
   if(contextPack.sessionId) parts.push('会话');
   return parts.length?parts.join(' · '):'Project-style local context';
 }
@@ -1667,10 +1672,17 @@ function renderContextPackAssetList(){
 }
 function renderContextPackPanel(){
   const active=contextPackHasContent();
+  const p=normalizeContextPack(contextPack);
   return `<section id="contextPackPanel" class="context-pack-card ${active?'active':''}" aria-label="工作包">
     <div class="context-pack-head"><div><span>Context Pack</span><b>${esc(contextPack.name||'默认工作包')}</b></div>${active?tag('active','green'):tag('empty')}</div>
     <label class="field-label" for="contextPackInstructions">工作指令</label>
     <textarea id="contextPackInstructions" rows="4" placeholder="写下这组工作要长期遵循的口径、范围或偏好。" oninput="updateContextPackInstructions(this.value)">${esc(contextPack.instructions)}</textarea>
+    <div class="context-pack-memory" aria-label="工作包记忆边界">
+      <span>记忆边界</span>
+      <button type="button" class="${p.memoryMode==='project'?'active':''}" onclick="setContextPackMemoryMode('project')">项目内</button>
+      <button type="button" class="${p.memoryMode==='default'?'active':''}" onclick="setContextPackMemoryMode('default')">默认</button>
+    </div>
+    <label class="context-pack-toggle"><input type="checkbox" ${p.includeCanvas?'checked':''} onchange="toggleContextPackCanvas(this.checked)"/><span>带 Canvas 草稿提问</span></label>
     ${contextPackPills()}
     ${renderContextPackAssetPicker()}
     <div class="context-pack-actions">
@@ -1703,6 +1715,16 @@ function updateContextPackInstructions(value){
   contextPack.instructions=String(value||'').slice(0,1200);
   contextPack.updatedAt=new Date().toISOString();
   persistContextPack({render:false,status:'工作指令已保存到本地工作包'});
+}
+function setContextPackMemoryMode(mode){
+  contextPack.memoryMode=mode==='default'?'default':'project';
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:contextPack.memoryMode==='project'?'已切换为项目内记忆边界':'已切换为默认会话记忆'});
+}
+function toggleContextPackCanvas(enabled){
+  contextPack.includeCanvas=Boolean(enabled);
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:contextPack.includeCanvas?'Canvas 草稿会随下一次提问提交':'已停止随提问提交 Canvas 草稿'});
 }
 function activeTraceId(){
   return currentTrace?.id || currentTrace?.trace_id || '';
@@ -1787,6 +1809,7 @@ function clearContextPack(){
 function contextPackPrompt(){
   const p=normalizeContextPack(contextPack);
   const lines=['使用以下工作包上下文继续分析：'];
+  lines.push(`记忆边界：${p.memoryMode==='project'?'只使用本工作包和当前会话上下文':'使用默认会话上下文，并参考工作包'}`);
   if(p.instructions.trim()) lines.push('', `工作指令：${p.instructions.trim()}`);
   if(p.agentId) lines.push(`Agent：${contextPackAgentName()||p.agentId}`);
   if(p.datasetIds.length) lines.push(`数据集：${p.datasetIds.map(datasetName).join('、')}`);
@@ -1794,12 +1817,14 @@ function contextPackPrompt(){
   if(p.reportIds.length) lines.push(`报告：${p.reportIds.map(id=>short(contextPackReportTitle(id),42)).join('、')}`);
   if(p.traceIds.length) lines.push(`Trace：${p.traceIds.join('、')}`);
   if(p.sessionId) lines.push(`来源会话：${p.sessionId}`);
+  if(p.includeCanvas&&chatCanvasValue().trim()) lines.push(`Canvas 草稿：${short(chatCanvasValue().trim().replace(/\s+/g,' '),520)}`);
   lines.push('', '请保持 RBAC、SQL Guard、Trace 和审计证据链，不要绕过权限或数据分级。', '本次问题：');
   return lines.join('\n');
 }
 function contextPackCanvasMarkdown(){
   const p=normalizeContextPack(contextPack);
   const lines=['# 工作包上下文','',`状态：${contextPackSummaryLabel()} (${contextPackSummaryDetail()})`,''];
+  lines.push('## 记忆边界',`- ${p.memoryMode==='project'?'项目内：优先使用本工作包资产、指令和当前会话。':'默认：沿用当前会话上下文，并参考本工作包资产。'}`,'');
   if(p.instructions.trim()) lines.push('## 工作指令',p.instructions.trim(),'');
   if(p.agentId) lines.push('## Agent',`- ${contextPackAgentName()||p.agentId}`,'');
   if(p.datasetIds.length) lines.push('## 数据集',...p.datasetIds.map(id=>`- ${datasetName(id)} (${id})`),'');
@@ -1807,12 +1832,13 @@ function contextPackCanvasMarkdown(){
   if(p.reportIds.length) lines.push('## 报告',...p.reportIds.map(id=>`- ${contextPackReportTitle(id)} (${id})`),'');
   if(p.traceIds.length) lines.push('## Trace',...p.traceIds.map(id=>`- ${id}`),'');
   if(p.sessionId) lines.push('## 来源会话',`- ${p.sessionId}`,'');
+  if(p.includeCanvas&&chatCanvasValue().trim()) lines.push('## Canvas 草稿',chatCanvasValue().trim().slice(0,3000),'');
   lines.push('## 下一步','- 基于工作包继续提问或生成报告要点。','- 若涉及 SQL，先通过 SQL Guard 并在 Trace 中复核。');
   return lines.join('\n');
 }
 function contextPackPayload(){
   const p=normalizeContextPack(contextPack);
-  return {
+  const payload={
     instructions:p.instructions,
     agent_id:p.agentId||null,
     dataset_ids:p.datasetIds,
@@ -1821,8 +1847,12 @@ function contextPackPayload(){
     trace_ids:p.traceIds,
     session_id:p.sessionId||null,
     tool_mode:p.toolMode,
-    evidence_depth:p.evidenceDepth
+    evidence_depth:p.evidenceDepth,
+    memory_mode:p.memoryMode,
+    include_canvas:p.includeCanvas
   };
+  if(p.includeCanvas&&chatCanvasValue().trim()) payload.canvas_markdown=chatCanvasValue().trim().slice(0,6000);
+  return payload;
 }
 function applyContextPackToChat(){
   const apply=()=>{
