@@ -965,11 +965,20 @@ function rerunUserQuestion(prompt,btn){
   setChatComposerDraft(prompt);
   requestAnimationFrame(()=>sendChat(btn));
 }
+function branchUserQuestion(prompt,btn){
+  const text=String(prompt||'').trim();
+  if(!text) return toast('问题为空，无法创建分支');
+  startNewChat();
+  setChatComposerDraft(text);
+  toast('已开启分支对话');
+  requestAnimationFrame(()=>sendChat(btn));
+}
 function userMessageActions(text){
   const prompt=String(text||'');
   return `<div class="message-actions" aria-label="用户消息操作">
     <button data-prompt="${esc(prompt)}" onclick="setChatComposerDraft(this.dataset.prompt)">编辑</button>
     <button data-prompt="${esc(prompt)}" onclick="rerunUserQuestion(this.dataset.prompt,this)">重问</button>
+    <button data-prompt="${esc(prompt)}" onclick="branchUserQuestion(this.dataset.prompt,this)">分支</button>
     <button data-prompt="${esc(prompt)}" onclick="writeQuestionToCanvas(this.dataset.prompt,'append')">写入 Canvas</button>
     <button data-copy="${esc(prompt)}" onclick="copyAnswerText(this.dataset.copy,this)">复制</button>
   </div>`;
