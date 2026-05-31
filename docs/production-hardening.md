@@ -17,7 +17,7 @@
 
 ```text
 1. 设置强 DAP_SECRET_KEY。
-2. 关闭或限制 DAP_DEMO_MODE。
+2. 关闭或限制 `DAP_DEMO_MODE` / `DAP_ALLOW_DEMO_SEED`，并在关闭前准备管理员账号初始化路径。
 3. 限制 DAP_CORS_ORIGINS。
 4. 配置 HTTPS / WAF / 内网访问控制。
 5. 对接企业 SSO / LDAP / IAM。
@@ -39,6 +39,7 @@
 | `DAP_SECRET_KEY` | Token 签名密钥，生产必须替换 |
 | `DAP_OPS_TOKEN` | `/_ops/*` 只读诊断入口 token，HF / production 未设置时会锁定 |
 | `DAP_CORS_ORIGINS` | 允许跨域来源 |
+| `DAP_DEMO_MODE` / `DAP_ALLOW_DEMO_SEED` | 控制默认演示账号和演示平台 fixture；关闭后需自行预置管理员账号 |
 | `DAP_SQL_MAX_ROWS` | SQL 最大返回行数 |
 | `DAP_SQL_TIMEOUT_MS` | SQL 查询超时 |
 | `DAP_ALLOWED_EXTERNAL_AGENT_HOSTS` | 外部 Agent host allowlist |

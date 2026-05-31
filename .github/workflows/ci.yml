@@ -46,6 +46,7 @@ jobs:
           python scripts/codex_runtime_smoke_test.py
           python scripts/hf_mode_regression_test.py
           python scripts/standalone_regression_test.py
+          python scripts/hardening_regression_test.py
 
   docker-smoke:
     runs-on: ubuntu-latest

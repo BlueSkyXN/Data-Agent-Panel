@@ -109,6 +109,7 @@ docker compose up --build
 DAP_APP_ENV=hf-space
 DAP_HF_SPACE=true
 DAP_DEMO_MODE=true
+DAP_ALLOW_DEMO_SEED=true
 DAP_CORS_ORIGINS=*
 DAP_CODEX_MODE=mock
 ```
@@ -121,6 +122,8 @@ DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
 `DAP_OPS_TOKEN` 未配置时，`/_ops/*` 诊断入口会在 Hugging Face / production 模式下锁定。Docker/HF 启动脚本会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但正式部署仍建议显式设置并保存在 Space Secrets 中。
+
+如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；正式环境需要先通过受控流程预置管理员账号。
 
 部署后执行：
 

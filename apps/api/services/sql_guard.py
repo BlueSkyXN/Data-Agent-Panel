@@ -113,7 +113,7 @@ def run_sql(sql: str, trace_id: str, dataset_id: str | None = None, max_rows: in
     timeout_seconds = max(0.1, settings.sql_timeout_ms / 1000)
 
     try:
-        with db.connect(db.BUSINESS_DB_PATH) as con:
+        with db.connect_readonly(db.BUSINESS_DB_PATH) as con:
             deadline = time.time() + timeout_seconds
             def _progress_handler():
                 return 1 if time.time() > deadline else 0

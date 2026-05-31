@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -13,6 +14,14 @@ from ..config import get_settings
 from . import codex_service, data_capabilities, sql_guard, trace_service
 
 settings = get_settings()
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+_EXTERNAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler)
 
 
 def _safe_json(value: Any) -> str:
@@ -384,9 +393,16 @@ def call_generic_http(adapter: dict[str, Any], payload: dict[str, Any], trace_id
     status = "success"
     response_json: dict[str, Any] = {}
     try:
-        with urllib.request.urlopen(req, timeout=max(1, int(adapter.get("timeout_ms", 60000)) / 1000)) as resp:
+        with _EXTERNAL_OPENER.open(req, timeout=max(1, int(adapter.get("timeout_ms", 60000)) / 1000)) as resp:
             body = resp.read().decode("utf-8")
             response_json = json.loads(body)
+    except urllib.error.HTTPError as exc:
+        status = "failed"
+        if 300 <= exc.code < 400:
+            response_json = {"error": "External agent redirects are not allowed"}
+            raise HTTPException(status_code=502, detail="External agent redirects are not allowed")
+        response_json = {"error": str(exc)}
+        raise HTTPException(status_code=502, detail=f"External agent call failed: {exc}")
     except Exception as exc:
         status = "failed"
         response_json = {"error": str(exc)}

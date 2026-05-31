@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import urllib.parse
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -33,14 +34,30 @@ def ensure_data_dir() -> None:
 
 
 @contextmanager
-def connect(path: Path | str = DB_PATH):
+def connect(path: Path | str | None = None):
     ensure_data_dir()
+    path = DB_PATH if path is None else path
     con = sqlite3.connect(str(path), check_same_thread=False)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     try:
         yield con
         con.commit()
+    finally:
+        con.close()
+
+
+@contextmanager
+def connect_readonly(path: Path | str | None = None):
+    ensure_data_dir()
+    path = DB_PATH if path is None else path
+    uri_path = urllib.parse.quote(str(Path(path).resolve()), safe="/")
+    con = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, check_same_thread=False)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA query_only = ON")
+    try:
+        yield con
     finally:
         con.close()
 
@@ -350,14 +367,26 @@ def _upsert_by_id(table: str, id_value: str, payload: dict[str, Any]) -> None:
         insert(table, payload)
 
 
+def _seed_demo_user(id_value: str, payload: dict[str, Any]) -> None:
+    if one("SELECT id FROM users WHERE id=? OR username=?", [id_value, payload["username"]]):
+        return
+    if settings.demo_mode and settings.allow_demo_seed:
+        insert("users", payload)
+
+
+def _demo_seed_enabled() -> bool:
+    return settings.demo_mode and settings.allow_demo_seed
+
+
 def seed_platform() -> None:
     t = now()
-    _upsert_by_id("users", "u_admin", {"id": "u_admin", "username": "admin", "password": "", "password_hash": hash_secret("admin123"), "name": "平台管理员", "email": "admin@example.com", "department": "Data Agent", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
-    _upsert_by_id("users", "u_user", {"id": "u_user", "username": "user", "password": "", "password_hash": hash_secret("user123"), "name": "业务用户", "email": "user@example.com", "department": "业务分析", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
+    _seed_demo_user("u_admin", {"id": "u_admin", "username": "admin", "password": "", "password_hash": hash_secret("admin123"), "name": "平台管理员", "email": "admin@example.com", "department": "Data Agent", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
+    _seed_demo_user("u_user", {"id": "u_user", "username": "user", "password": "", "password_hash": hash_secret("user123"), "name": "业务用户", "email": "user@example.com", "department": "业务分析", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
     for rid, name, desc in [("r_admin", "admin", "平台管理员"), ("r_business", "business_user", "业务分析用户")]:
         _upsert_by_id("roles", rid, {"id": rid, "name": name, "description": desc})
     for uid, rid in [("u_admin", "r_admin"), ("u_user", "r_business")]:
-        insert_ignore("user_roles", {"user_id": uid, "role_id": rid})
+        if one("SELECT id FROM users WHERE id=?", [uid]):
+            insert_ignore("user_roles", {"user_id": uid, "role_id": rid})
 
     permissions = [
         ("perm_agent_use", "agent:use", "使用已授权 Agent"),
@@ -377,6 +406,9 @@ def seed_platform() -> None:
         insert_ignore("role_permissions", {"role_id": "r_admin", "permission_id": pid})
     for pid in ["perm_agent_use", "perm_data_read"]:
         insert_ignore("role_permissions", {"role_id": "r_business", "permission_id": pid})
+
+    if not _demo_seed_enabled():
+        return
 
     _upsert_by_id("project_spaces", "space_demo", {"id": "space_demo", "name": "独立数据智能体演示空间", "owner_id": "u_admin", "description": "面向销售、客户服务、营销和经营分析的独立演示空间", "status": "active", "created_at": t})
     for uid, role in [("u_admin", "owner"), ("u_user", "member")]:

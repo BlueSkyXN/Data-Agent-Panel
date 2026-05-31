@@ -17,6 +17,7 @@ app_port: 7860
 DAP_APP_ENV=hf-space
 DAP_HF_SPACE=true
 DAP_DEMO_MODE=true
+DAP_ALLOW_DEMO_SEED=true
 DAP_CORS_ORIGINS=*
 DAP_ALLOWED_EXTERNAL_AGENT_HOSTS=localhost,127.0.0.1
 DAP_CODEX_MODE=mock
@@ -30,6 +31,8 @@ DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
 `DAP_OPS_TOKEN` 控制 `/_ops/*` 只读诊断入口。未配置时，HF / production 模式会锁定这些接口并返回不可用状态。`DAP_SECRET_KEY` 缺失时，Docker entrypoint 会在持久化数据目录中生成随机签名密钥；长期部署仍建议显式设置 Space Secret。
+
+如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；正式环境需要先通过受控流程预置管理员账号。
 
 ## 持久化目录优先级
 

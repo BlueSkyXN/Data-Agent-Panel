@@ -93,6 +93,10 @@ class Settings:
     def is_production(self) -> bool:
         return self.app_env.lower() in {"prod", "production"}
 
+    @property
+    def cors_allow_credentials(self) -> bool:
+        return "*" not in self.cors_origins
+
     def validate_for_runtime(self) -> list[str]:
         warnings: list[str] = []
         hardened_runtime = self.is_production or self.hf_space
@@ -100,8 +104,12 @@ class Settings:
             warnings.append("DAP_SECRET_KEY is using the default value; set a strong secret before production use.")
         if hardened_runtime and not self.ops_token:
             warnings.append("DAP_OPS_TOKEN is empty; /_ops endpoints are locked until a token is configured.")
-        if self.is_production and "*" in self.cors_origins:
+        if hardened_runtime and "*" in self.cors_origins:
             warnings.append("DAP_CORS_ORIGINS allows '*'; restrict origins before production use.")
+        if hardened_runtime and self.demo_mode and self.allow_demo_seed:
+            warnings.append("DAP demo seed is enabled in a hardened runtime; default demo users and fixtures may be created on first startup.")
+        if hardened_runtime and (not self.demo_mode or not self.allow_demo_seed):
+            warnings.append("DAP demo seed is disabled; provision administrator accounts before first login.")
         if self.is_production and self.demo_mode:
             warnings.append("DAP_DEMO_MODE=true in production; disable demo mode after initial validation.")
         if self.is_production and self.codex_mode == "cli" and not self.codex_cli_enabled:
