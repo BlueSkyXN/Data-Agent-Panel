@@ -27,27 +27,30 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
     version = db.one("SELECT * FROM agent_versions WHERE id=?", [agent["default_version_id"]])
     if not version:
         raise HTTPException(status_code=404, detail="Agent version not found")
-    session_id = payload.session_id
+    temporary_chat = bool((payload.context or {}).get("temporary_chat"))
+    session_id = None if temporary_chat else payload.session_id
     if session_id:
         existing_session = db.one("SELECT * FROM sessions WHERE id=?", [session_id])
         if not existing_session or existing_session["user_id"] != user["id"]:
             raise HTTPException(status_code=403, detail="No permission to use this session")
         if existing_session.get("agent_id") and existing_session["agent_id"] != agent["id"]:
             raise HTTPException(status_code=400, detail="Session is bound to a different agent")
-    else:
+    elif not temporary_chat:
         session_id = db.new_id("session")
         t = db.now()
         db.insert("sessions", {"id": session_id, "user_id": user["id"], "agent_id": agent["id"], "title": payload.message[:30], "status": "active", "created_at": t, "updated_at": t})
-    db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "user", "content": payload.message, "content_type": "text", "created_at": db.now()})
+    if not temporary_chat:
+        db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "user", "content": payload.message, "content_type": "text", "created_at": db.now()})
     trace_id = trace_service.create_trace(user["id"], payload.message, agent_id=agent["id"], session_id=session_id, agent_version=version["version"], request_id=getattr(request.state, "request_id", ""))
     start = time.time()
     try:
         output = adapters.call_adapter(agent, version, payload.message, trace_id, payload.context, user=user)
         duration = int((time.time() - start) * 1000)
         trace_service.finish_trace(trace_id, output, "success", duration)
-        db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "assistant", "content": json.dumps(output, ensure_ascii=False), "content_type": "agent_result", "created_at": db.now()})
-        db.update("sessions", "id", session_id, {"updated_at": db.now()})
-        audit("chat_query", user, "agent", agent["id"], {"trace_id": trace_id, "message": payload.message}, request)
+        if not temporary_chat:
+            db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "assistant", "content": json.dumps(output, ensure_ascii=False), "content_type": "agent_result", "created_at": db.now()})
+            db.update("sessions", "id", session_id, {"updated_at": db.now()})
+        audit("chat_query", user, "agent", agent["id"], {"trace_id": trace_id, "message": payload.message, "temporary_chat": temporary_chat}, request)
         return {"session_id": session_id, "trace_id": trace_id, "result": output}
     except Exception as exc:
         duration = int((time.time() - start) * 1000)

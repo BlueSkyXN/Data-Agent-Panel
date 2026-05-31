@@ -17,6 +17,7 @@ let sessionSearchCache = {};
 let answerDraftCache = {};
 let activeSessionId = '';
 let activeChatMessages = [];
+let temporaryChat = false;
 let chatCanvasDraft = '';
 let chatCanvasVersions = [];
 let chatCanvasVersionIndex = -1;
@@ -1666,7 +1667,7 @@ function renderChat(){
       ${renderContextPackPanel()}
     </aside>
     <section class="chat-stage">
-      <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">新对话</b></div><div class="chat-stage-actions"><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div><div class="brief-strip" aria-label="会话 Brief 操作"><button onclick="writeChatBriefToCanvas(this)">生成 Brief</button><button onclick="copyChatBrief(this)">复制 Brief</button><button onclick="downloadChatBriefMarkdown(this)">下载 Brief</button></div></div></div>
+      <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">${temporaryChat?'临时对话':'新对话'}</b></div><div class="chat-stage-actions"><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div><div class="session-mode-strip" aria-label="会话保存模式"><button id="temporaryChatButton" class="${temporaryChat?'active':''}" aria-pressed="${temporaryChat}" onclick="toggleTemporaryChat()">临时对话</button></div><div class="brief-strip" aria-label="会话 Brief 操作"><button onclick="writeChatBriefToCanvas(this)">生成 Brief</button><button onclick="copyChatBrief(this)">复制 Brief</button><button onclick="downloadChatBriefMarkdown(this)">下载 Brief</button></div></div></div>
       <div id="chatMessages" class="chat-thread">${chatEmptyState()}</div>
       <div class="composer-card">
         <div id="chatContextBar">${renderChatContextBar()}</div>
@@ -1696,6 +1697,7 @@ function renderChat(){
   </div>`;
   const router=agents.find(a=>a.id==='agent_router'); if(router) document.getElementById('chatAgent').value=router.id;
   syncChatContextBar();
+  syncTemporaryChatControls();
   syncChatBriefControls();
   refreshChatSessions().catch(()=>{document.getElementById('chatSessionList').innerHTML=emptyState('会话读取失败','仍可直接开始新对话。')});
 }
@@ -1734,11 +1736,27 @@ function renderChatContextBar(){
     ${chatContextChip('工具',toolLabels[ctx.toolMode]||ctx.toolMode,'会话模式')}
     ${chatContextChip('证据',depthLabels[ctx.evidenceDepth]||ctx.evidenceDepth,'Trace')}
     ${chatContextChip('工作包',contextPackSummaryLabel(),contextPackSummaryDetail(),contextPackHasContent()?'accent':'')}
+    ${chatContextChip('历史',temporaryChat?'临时对话':'保存会话',temporaryChat?'不写入会话库 · 保留 Trace':'可恢复 · 可搜索',temporaryChat?'accent':'')}
   </div>`;
 }
 function syncChatContextBar(){
   const box=document.getElementById('chatContextBar');
   if(box) box.innerHTML=renderChatContextBar();
+}
+function syncTemporaryChatControls(){
+  const button=document.getElementById('temporaryChatButton');
+  if(button){
+    button.classList.toggle('active',temporaryChat);
+    button.setAttribute('aria-pressed',String(temporaryChat));
+    button.title=temporaryChat?'临时对话不会写入会话库或消息历史，Trace 和审计仍会保留。':'开启临时对话';
+  }
+  const title=document.getElementById('chatSessionTitle');
+  if(title&&!activeSessionId&&temporaryChat) title.innerText='临时对话';
+}
+function toggleTemporaryChat(){
+  temporaryChat=!temporaryChat;
+  startNewChat({preserveTemporary:true});
+  toast(temporaryChat?'临时对话已开启：不会写入会话库，Trace 和审计仍保留':'临时对话已关闭：后续提问会保存为会话');
 }
 function composerContextItems(){
   const q=(composerContextFilterState.q||'').trim().toLowerCase();
@@ -2744,7 +2762,8 @@ function selectedChatContext(){
   const base={
     dataset_id:document.getElementById('chatDataset')?.value||null,
     tool_mode:document.querySelector('#toolMode button.active')?.dataset.mode||'auto',
-    evidence_depth:document.getElementById('traceDepth')?.value||'standard'
+    evidence_depth:document.getElementById('traceDepth')?.value||'standard',
+    temporary_chat:temporaryChat
   };
   if(contextPackHasContent()) base.context_pack=contextPackPayload();
   return base;
@@ -2947,17 +2966,20 @@ function bindSessionToContextPack(id,btn){
     setBusy(btn,false);
   }
 }
-function startNewChat(){
+function startNewChat(opts={}){
+  if(!opts.preserveTemporary) temporaryChat=false;
   activeSessionId='';
   activeChatMessages=[];
   currentTrace=null;
   chatCanvasDraft='';
   chatCanvasVersions=[];
   chatCanvasVersionIndex=-1;
-  const title=document.getElementById('chatSessionTitle'); if(title) title.innerText='新对话';
+  const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=temporaryChat?'临时对话':'新对话';
   const box=document.getElementById('chatMessages'); if(box) box.innerHTML=chatEmptyState();
   const trace=document.getElementById('traceBox'); if(trace) trace.innerHTML=emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。');
   setChatCanvasDraft('','Canvas 已清空',{record:false});
+  syncTemporaryChatControls();
+  syncChatContextBar();
   syncChatBriefControls();
   renderSessionList();
   requestAnimationFrame(()=>document.getElementById('chatInput')?.focus());
@@ -2971,9 +2993,11 @@ async function loadChatSession(id){
   try{
     const session=await api('/api/sessions/'+id);
     sessionSearchCache[session.id]=buildSessionSearchIndex(session);
+    temporaryChat=false;
     activeSessionId=session.id;
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=session.title||session.id;
     const agentSelect=document.getElementById('chatAgent'); if(agentSelect&&session.agent_id) agentSelect.value=session.agent_id;
+    syncTemporaryChatControls();
     syncChatContextBar();
     const messages=session.messages||[];
     activeChatMessages=messages;
@@ -3205,6 +3229,7 @@ function stopChatGeneration(btn){
 async function sendChat(btn){
   if(chatSending){ stopChatGeneration(); return; }
   const input=document.getElementById('chatInput'); const msg=input.value.trim(); if(!msg) return; const agent_id=document.getElementById('chatAgent').value;
+  const isTemporary=temporaryChat;
   chatSending=true;
   chatAbortController=new AbortController();
   const sendButton=document.getElementById('chatSendButton')||document.querySelector('#page-chat .composer-row button');
@@ -3219,17 +3244,18 @@ async function sendChat(btn){
   const pendingId='pending-'+Date.now();
   box.innerHTML+=`<div id="${pendingId}" class="message assistant pending-message">${inlineLoading('Agent 正在路由和生成答案')}</div>`;
   try{
-    const data=await api('/api/chat/query',{method:'POST',signal:chatAbortController.signal,body:JSON.stringify({message:msg,agent_id,session_id:activeSessionId||null,context:selectedChatContext()})}); const r=data.result||{};
-    activeSessionId=data.session_id||activeSessionId;
-    const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=sessionTitle({title:msg});
+    const data=await api('/api/chat/query',{method:'POST',signal:chatAbortController.signal,body:JSON.stringify({message:msg,agent_id,session_id:isTemporary?null:(activeSessionId||null),context:selectedChatContext()})}); const r=data.result||{};
+    activeSessionId=isTemporary?'':(data.session_id||activeSessionId);
+    const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=isTemporary?'临时对话':sessionTitle({title:msg});
     document.getElementById(pendingId)?.remove();
-    box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id,question:msg})}</div>`;
+    box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:isTemporary?'':activeSessionId,trace_id:data.trace_id,question:msg})}</div>`;
     activeChatMessages.push({role:'assistant',content:JSON.stringify(r),content_type:'agent_result',created_at:new Date().toISOString()});
-    if(activeSessionId) sessionSearchCache[activeSessionId]=buildSessionSearchIndex({messages:activeChatMessages});
+    if(!isTemporary&&activeSessionId) sessionSearchCache[activeSessionId]=buildSessionSearchIndex({messages:activeChatMessages});
     syncChatBriefControls();
     await openTrace(data.trace_id);
     if(!chatCanvasValue().trim()) setChatCanvasDraft(chatCanvasTemplate('report'),'已根据本轮回答生成报告要点');
-    await refreshChatSessions();
+    if(isTemporary) renderSessionList();
+    else await refreshChatSessions();
   }catch(e){
     const stopped=e?.name==='AbortError';
     const banner=stopped

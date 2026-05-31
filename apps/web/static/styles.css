@@ -676,6 +676,9 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .tool-strip{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .tool-strip button{background:#fff;color:#3d3a34;border:1px solid var(--line);border-radius:999px;padding:7px 11px;box-shadow:none}
 .tool-strip button.active{background:#171717;color:#fff;border-color:#171717}
+.session-mode-strip{display:flex;justify-content:flex-end}
+.session-mode-strip button{background:#fff7d6;color:#5f4b00;border:1px solid #ead89d;border-radius:999px;padding:6px 10px;box-shadow:none;font-size:11px}
+.session-mode-strip button.active{background:#171717;color:#fff;border-color:#171717}
 .brief-strip{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .brief-strip button{background:#f6f5ef;color:#3d3a34;border:1px solid var(--line);border-radius:999px;padding:6px 9px;box-shadow:none;font-size:11px}
 .brief-strip button:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
@@ -686,7 +689,7 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .chat-welcome p{margin:0;max-width:520px;color:#6b6b62;line-height:1.6}
 .assistant-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:14px;background:#171717;color:#fff;font-weight:900}
 .composer-card{border-top:1px solid var(--line);padding:12px 14px;background:#fbfaf7}
-.chat-context-bar{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.chat-context-bar{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;margin-bottom:10px}
 .chat-context-chip{display:grid;gap:3px;min-width:0;background:#fff;border:1px solid var(--line);border-radius:14px;padding:9px 10px;color:#3d3a34}
 .chat-context-chip.primary{background:#171717;color:#fff;border-color:#171717}
 .chat-context-chip.accent{background:#eef8f3;border-color:#cfe8dc;color:#0d6d58}
@@ -798,6 +801,7 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
   .context-card{border-left:0;border-top:1px solid var(--line);padding-left:0;padding-top:12px}
   .chat-stage-head{display:grid;gap:10px}
   .tool-strip{justify-content:flex-start}
+  .session-mode-strip{justify-content:flex-start}
   .chat-thread{padding:14px}
   .chat-welcome h2{font-size:24px}
   .chat-context-bar{grid-template-columns:1fr}
