@@ -36,6 +36,8 @@ let reportsCache = [];
 let reportFilterState = {q:'', status:'all', type:'all'};
 let activeReportId = '';
 let commandAssetsLoaded = false;
+const CONTEXT_PACK_STORAGE_KEY = 'dap_context_pack_v1';
+let contextPack = loadContextPack();
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -130,6 +132,39 @@ function timeText(v){return v?String(v).replace('T',' ').replace('Z',' UTC'):'-'
 function compactTags(values,limit=4){
   const list=[...new Set((values||[]).filter(Boolean))].slice(0,limit);
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
+}
+function defaultContextPack(){
+  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],reportIds:[],traceIds:[],sessionId:'',toolMode:'auto',evidenceDepth:'standard',updatedAt:''};
+}
+function normalizeIdList(list,limit=6){
+  return [...new Set(asList(list).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,limit);
+}
+function normalizeContextPack(pack={}){
+  const base=defaultContextPack();
+  const next=Object.assign({},base,pack||{});
+  next.name=short(next.name||base.name,40);
+  next.instructions=String(next.instructions||'').slice(0,1200);
+  next.agentId=String(next.agentId||'').slice(0,80);
+  next.datasetIds=normalizeIdList(next.datasetIds,6);
+  next.reportIds=normalizeIdList(next.reportIds,4);
+  next.traceIds=normalizeIdList(next.traceIds,6);
+  next.sessionId=String(next.sessionId||'').slice(0,90);
+  next.toolMode=['auto','analysis','sql','codex'].includes(next.toolMode)?next.toolMode:'auto';
+  next.evidenceDepth=['standard','full'].includes(next.evidenceDepth)?next.evidenceDepth:'standard';
+  next.updatedAt=String(next.updatedAt||'').slice(0,40);
+  return next;
+}
+function loadContextPack(){
+  try{
+    const stored=localStorage.getItem(CONTEXT_PACK_STORAGE_KEY);
+    return stored?normalizeContextPack(JSON.parse(stored)):defaultContextPack();
+  }catch(e){
+    return defaultContextPack();
+  }
+}
+function contextPackHasContent(pack=contextPack){
+  const p=normalizeContextPack(pack);
+  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.reportIds.length||p.traceIds.length||p.sessionId);
 }
 function asList(value){
   if(Array.isArray(value)) return value;
@@ -423,6 +458,7 @@ function reportDetailHtml(report){
     {label:'继续追问',onclick:`setChatDraft('${jsArg(`基于报告“${reportTitle}”继续追问：请解释核心结论、证据来源和下一步建议。`)}','agent_router')`},
     {label:'转深度研究',onclick:`setAnalysisDraft('${jsArg(`基于报告“${reportTitle}”继续做深度复盘：核对证据、风险点和可执行改进项。`)}','agent_business_analysis')`},
     {label:'创建 Codex 任务',onclick:`setCodexDraft('${jsArg(`改进报告体验：${reportTitle}`)}','${jsArg(`围绕报告 ${reportId} 检查报告中心体验、证据 Trace 入口和上下文动作，保持 RBAC、SQL Guard、Trace 和审计能力不退化。`)}')`},
+    {label:'加入工作包',onclick:`addReportToContextPack('${jsArg(reportId)}',this)`},
     {label:'查看审计',onclick:`openAuditFiltered('${jsArg(reportId)}')`}
   ].filter(Boolean));
   return `<div class="detail-panel report-detail">
@@ -722,6 +758,7 @@ function answerContextActions(r, meta={}, key=''){
     `<button class="answer-tool" data-title="优化问数工作流" data-prompt="${esc(codexPrompt)}" onclick="setCodexDraft(this.dataset.title,this.dataset.prompt)">创建 Codex 任务</button>`,
     key?`<button class="answer-tool" onclick="saveAnswerAsReport('${jsArg(key)}',this)">保存报告</button>`:'',
     traceId?`<button class="answer-tool" onclick="openEvidence('${jsArg(traceId)}','steps')">定位证据</button>`:'',
+    traceId?`<button class="answer-tool" onclick="addTraceToContextPack('${jsArg(traceId)}',this)">加入工作包</button>`:'',
     `<button class="answer-tool ghost-tool" data-copy="${esc(copyText)}" onclick="copyAnswerText(this.dataset.copy,this)">复制</button>`
   ].filter(Boolean);
   return `<div class="answer-toolstrip" aria-label="回答后续动作">${actions.join('')}</div>`;
@@ -1330,6 +1367,7 @@ function renderChat(){
         <label class="field-label" for="chatDataset">数据集</label><select id="chatDataset" onchange="syncChatContextBar()"><option value="">自动选择</option>${datasetOptions()}</select>
         <label class="field-label" for="traceDepth">证据深度</label><select id="traceDepth" onchange="syncChatContextBar()"><option value="standard">标准 Trace</option><option value="full">完整证据</option></select>
       </div>
+      ${renderContextPackPanel()}
     </aside>
     <section class="chat-stage">
       <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">新对话</b></div><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div></div>
@@ -1392,11 +1430,212 @@ function renderChatContextBar(){
     ${chatContextChip('数据集',datasetLabel,datasetDetail)}
     ${chatContextChip('工具',toolLabels[ctx.toolMode]||ctx.toolMode,'会话模式')}
     ${chatContextChip('证据',depthLabels[ctx.evidenceDepth]||ctx.evidenceDepth,'Trace')}
+    ${chatContextChip('工作包',contextPackSummaryLabel(),contextPackSummaryDetail(),contextPackHasContent()?'accent':'')}
   </div>`;
 }
 function syncChatContextBar(){
   const box=document.getElementById('chatContextBar');
   if(box) box.innerHTML=renderChatContextBar();
+}
+function contextPackCounts(){
+  const p=normalizeContextPack(contextPack);
+  return {
+    datasets:p.datasetIds.length,
+    reports:p.reportIds.length,
+    traces:p.traceIds.length,
+    instructions:p.instructions.trim()?1:0
+  };
+}
+function contextPackSummaryLabel(){
+  const counts=contextPackCounts();
+  const total=counts.datasets+counts.reports+counts.traces+counts.instructions+(contextPack.agentId?1:0)+(contextPack.sessionId?1:0);
+  return total?`${total} 项上下文`:'未捕获';
+}
+function contextPackSummaryDetail(){
+  const counts=contextPackCounts();
+  const parts=[];
+  if(counts.instructions) parts.push('指令');
+  if(contextPack.agentId) parts.push('Agent');
+  if(counts.datasets) parts.push(`${counts.datasets} 数据集`);
+  if(counts.reports) parts.push(`${counts.reports} 报告`);
+  if(counts.traces) parts.push(`${counts.traces} Trace`);
+  if(contextPack.sessionId) parts.push('会话');
+  return parts.length?parts.join(' · '):'Project-style local context';
+}
+function contextPackAgentName(){
+  return agents.find(a=>a.id===contextPack.agentId)?.name || contextPack.agentId || '';
+}
+function contextPackReportTitle(id){
+  const report=reportsCache.find(r=>r.id===id);
+  return report ? `${report.title||id} · ${reportTypeLabel(report.report_type)}` : id;
+}
+function contextPackPills(){
+  const p=normalizeContextPack(contextPack);
+  const pills=[];
+  if(p.agentId) pills.push(['Agent',contextPackAgentName()]);
+  p.datasetIds.forEach(id=>pills.push(['数据集',datasetName(id)]));
+  p.reportIds.forEach(id=>pills.push(['报告',contextPackReportTitle(id)]));
+  p.traceIds.forEach(id=>pills.push(['Trace',id]));
+  if(p.sessionId) pills.push(['会话',p.sessionId]);
+  return pills.length?`<div class="context-pack-pills">${pills.map(([label,value])=>`<span><small>${esc(label)}</small><b>${esc(short(value,34))}</b></span>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话后，这里会显示 Agent、数据集、Trace、报告和会话线索。</p>`;
+}
+function contextPackStatusText(){
+  return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
+}
+function renderContextPackPanel(){
+  const active=contextPackHasContent();
+  return `<section id="contextPackPanel" class="context-pack-card ${active?'active':''}" aria-label="工作包">
+    <div class="context-pack-head"><div><span>Context Pack</span><b>${esc(contextPack.name||'默认工作包')}</b></div>${active?tag('active','green'):tag('empty')}</div>
+    <label class="field-label" for="contextPackInstructions">工作指令</label>
+    <textarea id="contextPackInstructions" rows="4" placeholder="写下这组工作要长期遵循的口径、范围或偏好。" oninput="updateContextPackInstructions(this.value)">${esc(contextPack.instructions)}</textarea>
+    ${contextPackPills()}
+    <div class="context-pack-actions">
+      <button class="report-action" onclick="captureContextPack()">捕获当前</button>
+      <button class="report-action" onclick="applyContextPackToChat()">应用</button>
+      <button class="report-action" onclick="writeContextPackToCanvas()">写入 Canvas</button>
+      <button class="report-action ghost-tool" onclick="clearContextPack()">清空</button>
+    </div>
+    <small id="contextPackStatus" class="context-pack-status">${esc(contextPackStatusText())}</small>
+  </section>`;
+}
+function syncContextPackPanel(){
+  const panel=document.getElementById('contextPackPanel');
+  if(panel) panel.outerHTML=renderContextPackPanel();
+  syncChatContextBar();
+}
+function persistContextPack(opts={}){
+  contextPack=normalizeContextPack(contextPack);
+  try{localStorage.setItem(CONTEXT_PACK_STORAGE_KEY,JSON.stringify(contextPack));}catch(e){}
+  if(opts.render===false){
+    const status=document.getElementById('contextPackStatus');
+    if(status) status.innerText=opts.status||contextPackStatusText();
+    syncChatContextBar();
+  }else{
+    syncContextPackPanel();
+  }
+  if(opts.toast) toast(opts.toast);
+}
+function updateContextPackInstructions(value){
+  contextPack.instructions=String(value||'').slice(0,1200);
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({render:false,status:'工作指令已保存到本地工作包'});
+}
+function activeTraceId(){
+  return currentTrace?.id || currentTrace?.trace_id || '';
+}
+function captureContextPack(){
+  const ctx=chatContextSnapshot();
+  if(ctx.agent?.id) contextPack.agentId=ctx.agent.id;
+  if(ctx.dataset?.id) contextPack.datasetIds=normalizeIdList([...contextPack.datasetIds,ctx.dataset.id],6);
+  const traceId=activeTraceId();
+  if(traceId) contextPack.traceIds=normalizeIdList([traceId,...contextPack.traceIds],6);
+  if(activeSessionId) contextPack.sessionId=activeSessionId;
+  contextPack.toolMode=ctx.toolMode;
+  contextPack.evidenceDepth=ctx.evidenceDepth;
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'已捕获当前工作上下文'});
+}
+function addDatasetToContextPack(datasetId,btn){
+  if(!datasetId) return;
+  setBusy(btn,true);
+  contextPack.datasetIds=normalizeIdList([datasetId,...contextPack.datasetIds],6);
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'数据集已加入工作包'});
+  setBusy(btn,false);
+}
+function addReportToContextPack(reportId,btn){
+  if(!reportId) return;
+  setBusy(btn,true);
+  contextPack.reportIds=normalizeIdList([reportId,...contextPack.reportIds],4);
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'报告已加入工作包'});
+  setBusy(btn,false);
+}
+function addTraceToContextPack(traceId,btn){
+  if(!traceId) return;
+  setBusy(btn,true);
+  contextPack.traceIds=normalizeIdList([traceId,...contextPack.traceIds],6);
+  if(activeSessionId) contextPack.sessionId=activeSessionId;
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'Trace 已加入工作包'});
+  setBusy(btn,false);
+}
+function clearContextPack(){
+  if(!contextPackHasContent()) return toast('工作包已为空');
+  if(!window.confirm('清空本地工作包？')) return;
+  contextPack=defaultContextPack();
+  try{localStorage.removeItem(CONTEXT_PACK_STORAGE_KEY);}catch(e){}
+  syncContextPackPanel();
+  toast('工作包已清空');
+}
+function contextPackPrompt(){
+  const p=normalizeContextPack(contextPack);
+  const lines=['使用以下工作包上下文继续分析：'];
+  if(p.instructions.trim()) lines.push('', `工作指令：${p.instructions.trim()}`);
+  if(p.agentId) lines.push(`Agent：${contextPackAgentName()||p.agentId}`);
+  if(p.datasetIds.length) lines.push(`数据集：${p.datasetIds.map(datasetName).join('、')}`);
+  if(p.reportIds.length) lines.push(`报告：${p.reportIds.map(id=>short(contextPackReportTitle(id),42)).join('、')}`);
+  if(p.traceIds.length) lines.push(`Trace：${p.traceIds.join('、')}`);
+  if(p.sessionId) lines.push(`来源会话：${p.sessionId}`);
+  lines.push('', '请保持 RBAC、SQL Guard、Trace 和审计证据链，不要绕过权限或数据分级。', '本次问题：');
+  return lines.join('\n');
+}
+function contextPackCanvasMarkdown(){
+  const p=normalizeContextPack(contextPack);
+  const lines=['# 工作包上下文','',`状态：${contextPackSummaryLabel()} (${contextPackSummaryDetail()})`,''];
+  if(p.instructions.trim()) lines.push('## 工作指令',p.instructions.trim(),'');
+  if(p.agentId) lines.push('## Agent',`- ${contextPackAgentName()||p.agentId}`,'');
+  if(p.datasetIds.length) lines.push('## 数据集',...p.datasetIds.map(id=>`- ${datasetName(id)} (${id})`),'');
+  if(p.reportIds.length) lines.push('## 报告',...p.reportIds.map(id=>`- ${contextPackReportTitle(id)} (${id})`),'');
+  if(p.traceIds.length) lines.push('## Trace',...p.traceIds.map(id=>`- ${id}`),'');
+  if(p.sessionId) lines.push('## 来源会话',`- ${p.sessionId}`,'');
+  lines.push('## 下一步','- 基于工作包继续提问或生成报告要点。','- 若涉及 SQL，先通过 SQL Guard 并在 Trace 中复核。');
+  return lines.join('\n');
+}
+function contextPackPayload(){
+  const p=normalizeContextPack(contextPack);
+  return {
+    instructions:p.instructions,
+    agent_id:p.agentId||null,
+    dataset_ids:p.datasetIds,
+    report_ids:p.reportIds,
+    trace_ids:p.traceIds,
+    session_id:p.sessionId||null,
+    tool_mode:p.toolMode,
+    evidence_depth:p.evidenceDepth
+  };
+}
+function applyContextPackToChat(){
+  const apply=()=>{
+    const p=normalizeContextPack(contextPack);
+    const agent=document.getElementById('chatAgent');
+    if(p.agentId&&agent&&[...agent.options].some(o=>o.value===p.agentId)) agent.value=p.agentId;
+    const dataset=document.getElementById('chatDataset');
+    const firstDataset=p.datasetIds.find(id=>dataset&&[...dataset.options].some(o=>o.value===id));
+    if(firstDataset) dataset.value=firstDataset;
+    const depth=document.getElementById('traceDepth');
+    if(depth) depth.value=p.evidenceDepth;
+    setActiveToolMode(p.toolMode);
+    const input=document.getElementById('chatInput');
+    if(input){input.value=contextPackPrompt();input.focus();}
+    syncChatContextBar();
+    toast('工作包已应用到当前会话');
+  };
+  if(activePage!=='chat'||!document.getElementById('chatInput')){
+    showPage('chat');
+    setTimeout(apply,140);
+    return;
+  }
+  apply();
+}
+function writeContextPackToCanvas(){
+  const write=()=>setChatCanvasDraft(contextPackCanvasMarkdown(),'工作包已写入 Canvas');
+  if(activePage!=='chat'||!document.getElementById('chatCanvasDraft')){
+    showPage('chat');
+    setTimeout(write,140);
+    return;
+  }
+  write();
 }
 function chatPromptSeed(){
   const draft=(document.getElementById('chatInput')?.value||'').trim();
@@ -1528,11 +1767,13 @@ function copyChatCanvas(btn){
   return copyAnswerText(text,btn);
 }
 function selectedChatContext(){
-  return {
+  const base={
     dataset_id:document.getElementById('chatDataset')?.value||null,
     tool_mode:document.querySelector('#toolMode button.active')?.dataset.mode||'auto',
     evidence_depth:document.getElementById('traceDepth')?.value||'standard'
   };
+  if(contextPackHasContent()) base.context_pack=contextPackPayload();
+  return base;
 }
 function setSessionFilter(status,btn){
   chatSessionFilter.status=status;
@@ -2197,6 +2438,7 @@ async function openDatasetDetail(id,btn){
     const contextActions=contextActionStrip([
       {label:'用此数据集问数',onclick:`setDatasetChatDraft('${jsArg(id)}')`},
       {label:'转深度研究',onclick:`setDatasetAnalysisDraft('${jsArg(id)}')`},
+      {label:'加入工作包',onclick:`addDatasetToContextPack('${jsArg(id)}',this)`},
       {label:'创建治理任务',onclick:`setCodexDraft('${jsArg(`治理数据集：${datasetTitle}`)}','${jsArg(`检查数据集 ${id} 的目录展示、字段说明、指标口径、数据分级、SQL Guard、画像、质量规则和 Trace 证据链，保持 RBAC、masking 和审计能力不退化。`)}')`}
     ]);
     box.innerHTML=`<div class="dataset-detail">

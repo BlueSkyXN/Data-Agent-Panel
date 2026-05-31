@@ -613,6 +613,20 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .session-actions button:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
 .context-card{border-top:1px solid var(--line);padding-top:12px;margin-top:auto}
 .context-card>b{display:block;margin-bottom:8px}
+.context-pack-card{display:grid;gap:9px;border:1px solid var(--line);border-radius:14px;background:#fbfaf7;padding:12px;min-width:0}
+.context-pack-card.active{border-color:#c8d8cf;background:#f6fbf7}
+.context-pack-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.context-pack-head span{display:block;color:#7d786d;font-size:10px;font-weight:900;text-transform:uppercase;margin-bottom:3px}
+.context-pack-head b{display:block;font-size:14px;line-height:1.3}
+.context-pack-card textarea{min-height:86px;border-radius:12px;background:#fff;font-size:12px;line-height:1.5}
+.context-pack-pills{display:grid;gap:6px}
+.context-pack-pills span{display:grid;gap:2px;min-width:0;background:#fff;border:1px solid var(--line);border-radius:12px;padding:7px 8px}
+.context-pack-pills small{font-size:10px;color:#7d786d;font-weight:900;text-transform:uppercase}
+.context-pack-pills b{font-size:12px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.context-pack-empty{margin:0;color:#7d786d;font-size:12px;line-height:1.45}
+.context-pack-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.context-pack-actions .report-action{min-width:0;padding:7px 8px;border-radius:999px;font-size:12px}
+.context-pack-status{color:#7d786d;line-height:1.4}
 .chat-stage{display:flex;flex-direction:column;overflow:hidden}
 .chat-stage-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line)}
 .chat-stage-head span{display:block;font-size:12px;color:#7d786d;font-weight:900}
@@ -626,9 +640,10 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .chat-welcome p{margin:0;max-width:520px;color:#6b6b62;line-height:1.6}
 .assistant-mark{display:grid;place-items:center;width:44px;height:44px;border-radius:14px;background:#171717;color:#fff;font-weight:900}
 .composer-card{border-top:1px solid var(--line);padding:12px 14px;background:#fbfaf7}
-.chat-context-bar{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.chat-context-bar{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:10px}
 .chat-context-chip{display:grid;gap:3px;min-width:0;background:#fff;border:1px solid var(--line);border-radius:14px;padding:9px 10px;color:#3d3a34}
 .chat-context-chip.primary{background:#171717;color:#fff;border-color:#171717}
+.chat-context-chip.accent{background:#eef8f3;border-color:#cfe8dc;color:#0d6d58}
 .chat-context-chip small{font-size:10px;color:inherit;opacity:.68;font-weight:900;text-transform:uppercase}
 .chat-context-chip b{font-size:13px;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chat-context-chip em{font-style:normal;font-size:11px;color:inherit;opacity:.76;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -659,6 +674,7 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
   .assistant-shell{grid-template-columns:1fr;height:auto}
   .session-rail{display:grid;grid-template-columns:180px minmax(0,1fr) 260px;align-items:start}
   .context-card{border-top:0;border-left:1px solid var(--line);padding-top:0;padding-left:12px;margin-top:0}
+  .context-pack-card{grid-column:1 / -1}
   .chat-context-bar{grid-template-columns:repeat(2,minmax(0,1fr))}
   .composer-tools{grid-template-columns:repeat(3,minmax(0,1fr))}
   .prompt-list.compact{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -676,6 +692,7 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
   .chat-welcome h2{font-size:24px}
   .chat-context-bar{grid-template-columns:1fr}
   .composer-tools{grid-template-columns:1fr}
+  .context-pack-actions{grid-template-columns:1fr 1fr}
   .canvas-actions{grid-template-columns:1fr 1fr}
   .prompt-list.compact{grid-template-columns:1fr}
   .composer-row{grid-template-columns:1fr}
