@@ -15,6 +15,9 @@ let chatSessionFilter = {status:'active', q:''};
 let answerDraftCache = {};
 let activeSessionId = '';
 let chatCanvasDraft = '';
+let chatCanvasVersions = [];
+let chatCanvasVersionIndex = -1;
+let chatCanvasLastSelection = {start:0,end:0,text:''};
 let commandItems = [];
 let commandIndex = 0;
 let pendingEvidenceTarget = '';
@@ -1683,7 +1686,15 @@ function runChatQuickTool(kind){
 function renderChatCanvas(){
   return `<section class="chat-canvas-card" aria-label="工作 Canvas">
     <div class="pane-title canvas-title"><span>Canvas</span><div><h2>工作 Canvas</h2><p>把当前会话整理成可编辑 brief、SQL 草稿或报告大纲。</p></div></div>
-    <textarea id="chatCanvasDraft" rows="9" placeholder="生成分析大纲、SQL 草稿或报告要点后，可在这里继续编辑。" oninput="chatCanvasDraft=this.value">${esc(chatCanvasDraft)}</textarea>
+    <textarea id="chatCanvasDraft" rows="9" placeholder="生成分析大纲、SQL 草稿或报告要点后，可在这里继续编辑。" oninput="chatCanvasDraft=this.value;syncCanvasSelectionState()" onselect="syncCanvasSelectionState()" onkeyup="syncCanvasSelectionState()" onclick="syncCanvasSelectionState()" onblur="recordChatCanvasVersion('手动编辑')">${esc(chatCanvasDraft)}</textarea>
+    <div class="canvas-select-tools" aria-label="Canvas 选区工具">
+      <span id="canvasSelectionState">选择文本后可定向编辑</span>
+      <button class="report-action" onclick="runChatCanvasEdit('polish')">润色选区</button>
+      <button class="report-action" onclick="runChatCanvasEdit('evidence')">补证据</button>
+      <button class="report-action" onclick="runChatCanvasEdit('shorten')">压缩</button>
+      <button class="report-action" onclick="runChatCanvasEdit('expand')">展开</button>
+      <button class="report-action ghost-tool" onclick="runChatCanvasEdit('ask')">带选区提问</button>
+    </div>
     <div class="canvas-actions">
       <button class="report-action" onclick="runChatCanvasAction('brief')">分析大纲</button>
       <button class="report-action" onclick="runChatCanvasAction('sql')">SQL 草稿</button>
@@ -1692,6 +1703,7 @@ function renderChatCanvas(){
       <button class="report-action" onclick="saveChatCanvasAsReport(this)">保存报告</button>
       <button class="report-action ghost-tool" onclick="copyChatCanvas(this)">复制</button>
     </div>
+    <div id="chatCanvasVersionBar">${renderChatCanvasVersionBar()}</div>
     <small id="chatCanvasStatus" class="canvas-status">本地草稿，不会绕过报告复核或审计流程。</small>
   </section>`;
 }
@@ -1699,12 +1711,132 @@ function chatCanvasValue(){
   const el=document.getElementById('chatCanvasDraft');
   return el?el.value:chatCanvasDraft;
 }
-function setChatCanvasDraft(text,status='Canvas 已更新'){
+function setChatCanvasDraft(text,status='Canvas 已更新',opts={}){
   chatCanvasDraft=text;
+  chatCanvasLastSelection={start:0,end:0,text:''};
   const el=document.getElementById('chatCanvasDraft');
   if(el) el.value=text;
   const statusBox=document.getElementById('chatCanvasStatus');
   if(statusBox) statusBox.innerText=status;
+  if(opts.record!==false) recordChatCanvasVersion(opts.reason||status);
+  else syncChatCanvasVersionBar();
+  syncCanvasSelectionState();
+}
+function chatCanvasSelection(){
+  const el=document.getElementById('chatCanvasDraft');
+  const text=chatCanvasValue();
+  if(!el) return {start:0,end:0,text:'',full:text};
+  const start=el.selectionStart||0;
+  const end=el.selectionEnd||0;
+  if(start!==end){
+    chatCanvasLastSelection={start,end,text:text.slice(start,end)};
+    return {start,end,text:text.slice(start,end),full:text};
+  }
+  if(chatCanvasLastSelection.text&&text.slice(chatCanvasLastSelection.start,chatCanvasLastSelection.end)===chatCanvasLastSelection.text){
+    return {start:chatCanvasLastSelection.start,end:chatCanvasLastSelection.end,text:chatCanvasLastSelection.text,full:text};
+  }
+  return {start,end,text:text.slice(start,end),full:text};
+}
+function syncCanvasSelectionState(){
+  const state=document.getElementById('canvasSelectionState');
+  if(!state) return;
+  const selected=chatCanvasSelection().text.trim();
+  state.innerText=selected?`已选择 ${selected.length} 字，可定向编辑`:'选择文本后可定向编辑';
+}
+function recordChatCanvasVersion(reason='版本记录'){
+  const text=chatCanvasValue();
+  if(!text.trim()){ syncChatCanvasVersionBar(); return; }
+  const current=chatCanvasVersions[chatCanvasVersionIndex];
+  if(current&&current.text===text){ syncChatCanvasVersionBar(); return; }
+  if(chatCanvasVersionIndex<chatCanvasVersions.length-1) chatCanvasVersions=chatCanvasVersions.slice(0,chatCanvasVersionIndex+1);
+  chatCanvasVersions.push({text,reason,at:new Date().toISOString()});
+  if(chatCanvasVersions.length>12) chatCanvasVersions=chatCanvasVersions.slice(-12);
+  chatCanvasVersionIndex=chatCanvasVersions.length-1;
+  syncChatCanvasVersionBar();
+}
+function renderChatCanvasVersionBar(){
+  const total=chatCanvasVersions.length;
+  const current=total?chatCanvasVersionIndex+1:0;
+  const item=total?chatCanvasVersions[chatCanvasVersionIndex]:null;
+  return `<div class="canvas-version-bar">
+    <span>${total?`版本 ${current}/${total} · ${esc(item.reason||'更新')} · ${esc(timeText(item.at))}`:'暂无版本记录'}</span>
+    <div>
+      <button class="report-action" onclick="recordChatCanvasVersion('手动记录')" ${chatCanvasValue().trim()?'':'disabled'}>记录</button>
+      <button class="report-action" onclick="restoreChatCanvasVersion(-1)" ${current>1?'':'disabled'}>上一版</button>
+      <button class="report-action" onclick="restoreChatCanvasVersion(1)" ${current<total?'':'disabled'}>下一版</button>
+    </div>
+  </div>`;
+}
+function syncChatCanvasVersionBar(){
+  const bar=document.getElementById('chatCanvasVersionBar');
+  if(bar) bar.innerHTML=renderChatCanvasVersionBar();
+}
+function restoreChatCanvasVersion(delta){
+  const next=chatCanvasVersionIndex+delta;
+  if(next<0||next>=chatCanvasVersions.length) return;
+  chatCanvasVersionIndex=next;
+  setChatCanvasDraft(chatCanvasVersions[next].text,`已恢复到版本 ${next+1}`,{record:false});
+}
+function canvasSelectionTarget(){
+  const selection=chatCanvasSelection();
+  const selected=selection.text.trim();
+  return {
+    range:selection,
+    text:selected||selection.full.trim(),
+    hasSelection:Boolean(selected)
+  };
+}
+function polishedCanvasText(text){
+  const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
+  if(!lines.length) return '';
+  return lines.map(line=>{
+    if(/^#{1,6}\s/.test(line)||/^[-*]\s/.test(line)||/^\d+\.\s/.test(line)) return line;
+    if(line.length>46) return line;
+    return `- ${line}`;
+  }).join('\n');
+}
+function evidenceCanvasText(text){
+  const traceId=activeTraceId();
+  const ctx=chatCanvasContext();
+  return [text.trim(),'','证据补充：',`- Trace：${traceId||ctx.traceId||'待生成 Trace'}`,`- 数据集：${ctx.datasetName}`,`- 权限：发送或执行前继续通过 RBAC、masking 和 SQL Guard 复核`,`- 审计：保存报告或创建任务后保留来源会话与证据链`].join('\n');
+}
+function shortenCanvasText(text){
+  const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean).slice(0,6);
+  return ['摘要：',...lines.map(line=>`- ${short(line.replace(/^[-*]\s*/,''),88)}`)].join('\n');
+}
+function expandCanvasText(text){
+  const ctx=chatCanvasContext();
+  return [text.trim(),'','展开方向：',`- 业务问题：${ctx.question}`,'- 口径：补充指标定义、时间范围和过滤条件。','- 证据：附上 SQL、Trace、权限检查和行数。','- 风险：标记数据分级、脱敏、样本量和异常值。','- 下一步：转深度研究、保存报告或创建 Codex 工程任务。'].join('\n');
+}
+function replaceChatCanvasTarget(nextText,status){
+  const target=canvasSelectionTarget();
+  if(!target.text) return toast('Canvas 为空');
+  const full=chatCanvasValue();
+  let start=0, end=full.length;
+  if(target.hasSelection){ start=target.range.start; end=target.range.end; }
+  const updated=full.slice(0,start)+nextText+full.slice(end);
+  setChatCanvasDraft(updated,status,{reason:status});
+  requestAnimationFrame(()=>{
+    const el=document.getElementById('chatCanvasDraft');
+    if(el){ el.focus(); el.setSelectionRange(start,start+nextText.length); syncCanvasSelectionState(); }
+  });
+}
+function runChatCanvasEdit(kind){
+  const target=canvasSelectionTarget();
+  if(!target.text) return toast('Canvas 为空');
+  if(kind==='ask'){
+    const prompt=`基于 Canvas ${target.hasSelection?'选区':'全文'}继续追问：\n${target.text}\n\n请补充口径、证据、风险和下一步动作。`;
+    setChatComposerDraft(prompt,document.getElementById('chatAgent')?.value||'agent_router',document.getElementById('chatDataset')?.value||'');
+    return;
+  }
+  const transforms={
+    polish:[polishedCanvasText,'Canvas 选区已润色'],
+    evidence:[evidenceCanvasText,'Canvas 已补充证据'],
+    shorten:[shortenCanvasText,'Canvas 选区已压缩'],
+    expand:[expandCanvasText,'Canvas 选区已展开']
+  };
+  const [fn,status]=transforms[kind]||transforms.polish;
+  replaceChatCanvasTarget(fn(target.text),status);
 }
 function chatCanvasContext(){
   const ctx=chatContextSnapshot();
@@ -1857,10 +1989,12 @@ function startNewChat(){
   activeSessionId='';
   currentTrace=null;
   chatCanvasDraft='';
+  chatCanvasVersions=[];
+  chatCanvasVersionIndex=-1;
   const title=document.getElementById('chatSessionTitle'); if(title) title.innerText='新对话';
   const box=document.getElementById('chatMessages'); if(box) box.innerHTML=chatEmptyState();
   const trace=document.getElementById('traceBox'); if(trace) trace.innerHTML=emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。');
-  setChatCanvasDraft('','Canvas 已清空');
+  setChatCanvasDraft('','Canvas 已清空',{record:false});
   renderSessionList();
   requestAnimationFrame(()=>document.getElementById('chatInput')?.focus());
 }
