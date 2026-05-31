@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#101827" />
   <title>独立数据智能体平台</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -17,28 +19,32 @@
           <span>Agent Gateway</span><span>SQL Guard</span><span>Codex CLI / SDK</span><span>Trace</span>
         </div>
       </div>
-      <div class="login-card">
+      <form class="login-card" onsubmit="event.preventDefault(); login();">
         <h2>登录</h2>
-        <label>用户名</label><input id="username" value="admin" autocomplete="username" />
-        <label>密码</label><input id="password" value="admin123" type="password" autocomplete="current-password" />
-        <button onclick="login()">进入平台</button>
+        <label for="username">用户名</label><input id="username" value="admin" autocomplete="username" />
+        <label for="password">密码</label><input id="password" value="admin123" type="password" autocomplete="current-password" />
+        <button type="submit">进入平台</button>
         <div class="hint">默认：admin/admin123 或 user/user123。生产环境请禁用演示账号。</div>
-      </div>
+      </form>
     </div>
   </div>
 
   <div id="app" class="app hidden">
-    <aside class="sidebar">
+    <div class="sidebar-backdrop" onclick="toggleSidebar(false)" aria-hidden="true"></div>
+    <aside class="sidebar" aria-label="主导航">
       <div class="logo"><div>DA</div><span>DATA AGENT</span></div>
       <nav id="nav">
+        <span class="nav-section">工作台</span>
         <button data-page="dashboard" onclick="showPage('dashboard')">总览</button>
         <button data-page="agents" onclick="showPage('agents')">Agent Studio</button>
         <button data-page="chat" onclick="showPage('chat')">智能问数</button>
         <button data-page="analysis" onclick="showPage('analysis')">深度研究</button>
         <button data-page="panels" onclick="showPage('panels')">分析面板</button>
+        <span class="nav-section">治理</span>
         <button data-page="dataops" onclick="showPage('dataops')">数据能力</button>
         <button data-page="semantic" onclick="showPage('semantic')">语义中心</button>
         <button data-page="codex" onclick="showPage('codex')">Codex 运行台</button>
+        <span class="nav-section">运营</span>
         <button data-page="reports" onclick="showPage('reports')">报告中心</button>
         <button data-page="knowledge" onclick="showPage('knowledge')">知识库</button>
         <button data-page="evals" onclick="showPage('evals')">评测中心</button>
@@ -49,14 +55,21 @@
 
     <main class="main">
       <header class="topbar">
-        <div>
+        <button id="mobileMenu" class="icon-button mobile-menu" type="button" aria-label="打开导航" aria-expanded="false" onclick="toggleSidebar()">
+          <span></span><span></span><span></span>
+        </button>
+        <div class="top-title">
           <div class="eyebrow">Enterprise Data Agent</div>
           <strong id="pageTitle">总览</strong>
+          <div class="top-status" aria-label="平台安全状态">
+            <span>RBAC</span><span>SQL Guard</span><span>Trace</span>
+          </div>
         </div>
         <div class="top-actions">
-          <input id="globalSearch" placeholder="搜索 Agent / 指标 / 任务" onkeydown="if(event.key==='Enter')globalJump()" />
+          <input id="globalSearch" aria-label="全局搜索" aria-controls="commandMenu" aria-expanded="false" placeholder="搜索 Agent/指标/任务" onfocus="renderCommandMenu()" oninput="renderCommandMenu()" onkeydown="handleGlobalSearchKey(event)" />
           <button class="secondary" onclick="globalJump()">搜索</button>
           <button onclick="showPage('codex')">创建 Codex 任务</button>
+          <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="全局指挥入口"></div>
         </div>
       </header>
       <section id="page-dashboard" class="page"></section>

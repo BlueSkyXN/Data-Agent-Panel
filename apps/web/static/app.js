@@ -6,6 +6,13 @@ let metrics = [];
 let activePage = 'dashboard';
 let currentTrace = null;
 let lastAnalysisTaskId = '';
+let lastSidebarTrigger = null;
+let chatSending = false;
+let chatSessions = [];
+let activeSessionId = '';
+let commandItems = [];
+let commandIndex = 0;
+let pendingEvidenceTarget = '';
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -26,10 +33,306 @@ function short(s,n=90){s=String(s??''); return s.length>n?s.slice(0,n)+'…':s}
 function tag(text, cls=''){return `<span class="tag ${cls}">${esc(text)}</span>`}
 function toast(msg){const t=document.getElementById('toast');t.innerText=msg;t.classList.remove('hidden');setTimeout(()=>t.classList.add('hidden'),2600)}
 function card(title, body, cls=''){return `<div class="card ${cls}"><h3>${esc(title)}</h3>${body}</div>`}
-function renderTable(rows, limit=80){
-  if(!rows || !rows.length) return '<div class="muted">暂无数据</div>';
-  const cols = Object.keys(rows[0]);
-  return `<div class="table-wrap"><table class="table"><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.slice(0,limit).map(r=>`<tr>${cols.map(c=>`<td>${esc(typeof r[c]==='object'?JSON.stringify(r[c]):fmt(r[c]))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+function setBusy(el,busy=true){
+  if(!el) return;
+  el.disabled=busy;
+  el.classList.toggle('is-busy',busy);
+}
+function inlineLoading(text='正在处理'){
+  return `<div class="inline-loading" role="status" aria-live="polite"><span></span>${esc(text)}</div>`;
+}
+function stateBanner(kind='info', title='状态更新', text='', meta=[]){
+  const icon={success:'OK',warn:'!',error:'!',pending:'...',info:'i'}[kind]||'i';
+  const role=kind==='error'?'alert':'status';
+  return `<div class="state-banner ${kind}" role="${role}" aria-live="polite"><span class="state-icon">${esc(icon)}</span><div><b>${esc(title)}</b>${text?`<p>${esc(text)}</p>`:''}${meta.length?`<div class="state-meta">${meta.map(m=>tag(m)).join('')}</div>`:''}</div></div>`;
+}
+const keyLabels={
+  id:'ID',name:'名称',title:'标题',description:'说明',status:'状态',type:'类型',mode:'模式',risk:'风险',risk_level:'风险',
+  updated_at:'更新时间',created_at:'创建时间',dataset_id:'数据集',dataset_name:'数据集',business_domain:'业务域',
+  source_id:'数据源',physical_table:'物理表',refresh_mode:'刷新',data_classification:'分级',code:'编码',formula:'口径公式',
+  time_grain:'时间粒度',owner_id:'负责人',checked_rows:'检查行数',failed_rows:'异常行数',severity:'级别',
+  rule:'规则',agent_id:'Agent',adapter_id:'Adapter',duration_ms:'耗时',row_count:'行数',trace_id:'Trace',
+  agents:'Agent',sessions:'会话',tasks:'任务',traces:'Trace',reports:'报告',eval_sets:'评测集',feedback:'反馈',audit_logs:'审计',
+  query_result:'查询结果',region:'区域',revenue:'收入',order_count:'订单数',gross_margin:'毛利',
+  actor:'操作者',user_id:'用户',action:'动作',resource_type:'资源类型',resource_id:'资源 ID',object_type:'对象类型',object_id:'对象 ID',
+  request_id:'Request ID',ip:'IP',version:'版本',backend_type:'后端',question:'问题',score:'得分',error_type:'错误类型',
+  term:'术语',term_type:'术语类型',definition:'定义',canonical_object_type:'绑定对象',canonical_object_id:'对象 ID',synonyms:'同义词',
+  intent:'意图',template_text:'模板问题',sql_template:'SQL 模板',chart_type:'图表类型',example_questions:'示例问题',
+  field_count:'字段',field_desc_missing_count:'字段说明缺口'
+};
+const valueLabels={
+  active:'启用',published:'已发布',success:'成功',failed:'失败',error:'错误',pending:'待处理',pending_review:'待复核',
+  approved:'已批准',awaiting_approval:'待审批',draft:'草稿',passed:'通过',high:'高风险',medium:'中风险',low:'低风险',
+  confidential:'敏感',internal:'内部',public:'公开',daily:'每日',month:'月',mock:'mock',http:'HTTP',cli:'CLI',sdk:'SDK',
+  router:'总控路由',chatbi:'智能问数',analysis:'深度研究',knowledge:'知识问答',report:'报告生成',risk:'风险识别',
+  data:'数据治理',semantic:'语义治理',panel:'面板生成',codex:'工程派发',login:'登录',chat_query:'智能问数',
+  metric:'指标',business_term:'业务术语',topn:'TopN',trend:'趋势',distribution:'分布',roi:'ROI',
+  page:'页面',agent:'Agent',dataset:'数据集',prompt:'问题',ask:'提问'
+};
+function displayKey(k){return keyLabels[k]||String(k||'').replace(/_/g,' ')}
+function displayValue(v){return valueLabels[String(v)]||fmt(v)}
+function statusClass(v){
+  const s=String(v||'').toLowerCase();
+  if(['success','active','published','approved','pass','passed','ok','completed','closed'].includes(s)) return 'green';
+  if(['failed','error','rejected','high'].includes(s)) return 'red';
+  if(['pending','pending_review','awaiting_approval','medium','confidential','warn'].includes(s)) return 'amber';
+  return '';
+}
+function statusTag(v){return tag(displayValue(v), statusClass(v))}
+function emptyState(title='暂无数据', text='当前筛选范围没有可展示记录。'){
+  return `<div class="empty-state"><div class="empty-icon">∅</div><b>${esc(title)}</b><p>${esc(text)}</p></div>`;
+}
+function loadingState(title='正在加载工作台数据'){
+  return `<div class="loading-panel" role="status" aria-live="polite"><div class="loading-bar"></div><b>${esc(title)}</b><p>正在读取权限范围内的数据、状态和 Trace 线索。</p></div>`;
+}
+function pageHeader(title, subtitle='', chips=[]){
+  return `<div class="page-heading"><div><div class="eyebrow">DATA AGENT WORKSTATION</div><h1>${esc(title)}</h1>${subtitle?`<p>${esc(subtitle)}</p>`:''}</div>${chips.length?`<div class="heading-chips">${chips.map(c=>Array.isArray(c)?tag(c[0],c[1]):tag(c)).join('')}</div>`:''}</div>`;
+}
+function metricCard(label, value, note='', cls=''){
+  return `<div class="metric-card ${cls}"><div class="metric-label">${esc(label)}</div><div class="metric">${esc(displayValue(value))}</div>${note?`<div class="muted">${esc(note)}</div>`:''}</div>`;
+}
+function jsArg(s){return String(s??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\r?\n/g,'\\n')}
+function countBy(rows,key){
+  return (rows||[]).reduce((acc,row)=>{const k=row?.[key]||'unknown'; acc[k]=(acc[k]||0)+1; return acc;},{});
+}
+function topCounts(rows,key,limit=5){
+  return Object.entries(countBy(rows,key)).sort((a,b)=>b[1]-a[1]).slice(0,limit);
+}
+function timeText(v){return v?String(v).replace('T',' ').replace('Z',' UTC'):'-'}
+function compactTags(values,limit=4){
+  const list=[...new Set((values||[]).filter(Boolean))].slice(0,limit);
+  return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
+}
+function asList(value){
+  if(Array.isArray(value)) return value;
+  if(!value) return [];
+  if(typeof value==='string'){
+    try{ const parsed=JSON.parse(value); return Array.isArray(parsed)?parsed:[value]; }catch(e){ return value.split(',').map(x=>x.trim()).filter(Boolean); }
+  }
+  return [value];
+}
+function assetName(list,id,fallback='-'){
+  if(!id) return fallback;
+  const item=(list||[]).find(x=>x.id===id);
+  return item?.name || item?.display_name || id;
+}
+function datasetName(id){return assetName(datasets,id,id||'-')}
+function metricName(id){return assetName(metrics,id,id||'-')}
+function cellHtml(key,value){
+  if(value===null || value===undefined || value==='') return '<span class="muted">-</span>';
+  if(['status','risk','risk_level','severity','mode','data_classification','refresh_mode'].includes(key)) return statusTag(value);
+  if(key==='action') return tag(displayValue(value));
+  if(typeof value==='boolean') return statusTag(value?'启用':'关闭');
+  if(Array.isArray(value)) return compactTags(value,5);
+  if(typeof value==='object') return `<details><summary>查看</summary><pre class="code">${esc(JSON.stringify(value,null,2))}</pre></details>`;
+  const shown=displayValue(value);
+  if(String(shown).length>72) return `<span title="${esc(shown)}">${esc(short(shown,72))}</span>`;
+  return esc(shown);
+}
+function renderTable(rows, opts=80){
+  const cfg=typeof opts==='number'?{limit:opts}:(opts||{});
+  const limit=cfg.limit||80;
+  if(!rows || !rows.length) return emptyState(cfg.emptyTitle||'暂无数据', cfg.emptyText||'当前没有可展示记录。');
+  let cols=(cfg.columns&&cfg.columns.length?cfg.columns:Object.keys(rows[0])).filter(c=>rows.some(r=>Object.prototype.hasOwnProperty.call(r,c)));
+  if(!cols.length) cols=Object.keys(rows[0]);
+  const cls=cfg.compact?' table compact':' table';
+  const visibleRows=rows.slice(0,limit);
+  const meta=cfg.meta===false?'':`<div class="table-meta"><span>${visibleRows.length} / ${rows.length} rows</span><span>· ${cols.length} columns</span>${rows.length>limit?`<span>· 已截断到 ${limit} 行</span>`:''}</div>`;
+  return `<div class="table-shell">${meta}<div class="table-wrap"><table class="${cls}"><thead><tr>${cols.map(c=>`<th>${esc((cfg.labels&&cfg.labels[c])||displayKey(c))}</th>`).join('')}</tr></thead><tbody>${visibleRows.map(r=>`<tr>${cols.map(c=>`<td>${cellHtml(c,r[c])}</td>`).join('')}</tr>`).join('')}</tbody></table></div></div>`;
+}
+function datasetCard(d){
+  return `<div class="asset-card"><div class="asset-card-head"><div><b>${esc(d.name)}</b><span>${esc(d.physical_table||d.id)}</span></div>${statusTag(d.status)}</div><p>${esc(d.description||'暂无说明')}</p><div>${tag(d.business_domain||'Domain')}${statusTag(d.data_classification)}${statusTag(d.refresh_mode)}</div></div>`;
+}
+function promptButton(q){return `<button class="prompt-pill" onclick="askPreset('${jsArg(q)}')">${esc(q)}</button>`}
+function percent(v){return Math.max(0,Math.min(100,Math.round(Number(v||0)*100)))}
+function agentCard(a){
+  return `<div class="agent-card">
+    <div class="agent-card-head"><div><b>${esc(a.name)}</b><span>${esc(a.id)}</span></div>${statusTag(a.status)}</div>
+    <p>${esc(a.description||'暂无说明')}</p>
+    <div class="agent-tags">${tag(a.type||'agent')}${statusTag(a.risk_level||'low')}${a.adapter_id?tag(a.adapter_id):''}</div>
+    <div class="agent-meta"><span>Version ${esc(a.version||'-')}</span><span>${esc(a.owner_id||'platform')}</span></div>
+    <div class="agent-actions"><button class="secondary" onclick="showPage('chat');setTimeout(()=>{document.getElementById('chatAgent').value='${jsArg(a.id)}'},60)">试用</button><button class="ghost" onclick="openAgentDetail('${jsArg(a.id)}')">详情</button></div>
+  </div>`;
+}
+function reportCard(r){
+  const flow=['draft','pending_review','approved','published'];
+  const idx=Math.max(0,flow.indexOf(r.status||'draft'));
+  return `<article class="report-card">
+    <div class="report-card-head"><div><span>${esc(r.report_type||'report')}</span><b>${esc(r.title||r.id)}</b></div>${statusTag(r.status||'draft')}</div>
+    <div class="mini-flow">${flow.map((s,i)=>`<span class="${i<=idx?'done':''}">${esc(displayValue(s))}</span>`).join('')}</div>
+    <div class="report-meta"><span>${esc(r.owner_id||'platform')}</span><span>${esc(timeText(r.updated_at||r.created_at))}</span></div>
+    <div class="report-actions">${reportActionButtons(r)}</div>
+  </article>`;
+}
+function reportActionButtons(r){
+  if(!r?.id) return '';
+  const id=jsArg(r.id);
+  const buttons=[`<button class="report-action" onclick="openReportDetail('${id}',this)">查看</button>`];
+  if((r.status||'draft')==='draft') buttons.push(`<button class="report-action" onclick="runReportAction('${id}','submit-review',this)">提交复核</button>`);
+  if(r.status==='pending_review') buttons.push(`<button class="report-action" onclick="runReportAction('${id}','approve',this)">批准</button>`);
+  if(r.status==='approved') buttons.push(`<button class="report-action" onclick="runReportAction('${id}','publish',this)">发布</button>`);
+  return buttons.join('');
+}
+function reportDetailHtml(report){
+  const versions=report.versions||[];
+  const current=versions.find(v=>v.id===report.current_version_id)||versions[0]||{};
+  const evidence=parseJsonMaybe(current.evidence_json||'[]')||[];
+  return `<div class="detail-panel report-detail">
+    <div class="card-heading"><div><h3>${esc(report.title||report.id)}</h3><p class="muted">${esc(report.report_type||'report')} · ${esc(report.owner_id||'-')} · ${esc(timeText(report.created_at))}</p></div><div>${statusTag(report.status)}${tag(`${versions.length} versions`)}</div></div>
+    <div class="report-actions">${reportActionButtons(report)}</div>
+    <div class="report">${esc(current.content_markdown||'暂无报告正文')}</div>
+    <div class="grid2 section-gap"><div><h4>版本</h4>${renderTable(versions,{columns:['version','created_by','created_at','id'],compact:true,limit:20})}</div><div><h4>证据</h4>${Array.isArray(evidence)&&evidence.length?renderTable(evidence,{limit:20,compact:true}):`<pre class="code">${esc(JSON.stringify(evidence,null,2))}</pre>`}</div></div>
+  </div>`;
+}
+function knowledgeCard(k,versions=[]){
+  return `<article class="knowledge-card">
+    <div class="knowledge-icon">${esc((k.type||'K').slice(0,2).toUpperCase())}</div>
+    <div><div class="knowledge-head"><b>${esc(k.name||k.id)}</b>${statusTag(k.status||'active')}</div>
+    <p>${esc(k.description||'暂无说明')}</p>
+    <div class="knowledge-meta">${tag(k.backend_type||'backend')}${k.adapter_id?tag(k.adapter_id):''}${tag(`${versions.length||0} versions`,'green')}</div></div>
+  </article>`;
+}
+function evalSetCard(s,cases=[]){
+  const tags=[...new Set(cases.flatMap(c=>Array.isArray(c.tags)?c.tags:[]))];
+  return `<article class="eval-card">
+    <div class="eval-card-head"><div><span>${esc(s.business_domain||'Evaluation')}</span><b>${esc(s.name||s.id)}</b></div>${tag(`${cases.length} cases`,'green')}</div>
+    <p>${esc(s.description||'暂无说明')}</p>
+    <div class="eval-tags">${compactTags(tags,5)}</div>
+  </article>`;
+}
+function evalResultPayload(row){
+  if(!row) return {};
+  if(typeof row.result_json==='string') return parseJsonMaybe(row.result_json)||{};
+  return row.result_json||{};
+}
+function evalTraceId(row){return evalResultPayload(row).trace_id||''}
+function scoreClass(score){
+  const v=Number(score||0);
+  if(v>=0.8) return 'green';
+  if(v>=0.6) return 'amber';
+  return 'red';
+}
+function evalRunSummary(run){
+  const results=run.results||[];
+  const scores=results.map(r=>Number(r.score||0));
+  const avg=scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:0;
+  return {count:results.length,avg,passed:scores.filter(s=>s>=0.8).length,needsReview:scores.filter(s=>s<0.8).length,low:results.filter(r=>Number(r.score||0)<0.8)};
+}
+function evalResultCard(row,index){
+  const payload=evalResultPayload(row), traceId=evalTraceId(row), score=Number(row.score||0);
+  return `<article class="eval-result-card ${score<0.8?'needs-review':''}">
+    <div class="eval-result-head"><span>${String(index+1).padStart(2,'0')}</span><div><b>${esc(row.question||row.eval_case_id||'评测用例')}</b><p>${esc(payload.answer||'暂无回答摘要')}</p></div>${tag(fmt(score),scoreClass(score))}</div>
+    <div class="eval-result-meta">${tag(row.error_type||'no error',row.error_type?'red':'green')}${row.reviewer_id?tag(row.reviewer_id):tag('unreviewed','amber')}${traceId?tag(traceId):''}</div>
+    ${traceId?`<div class="eval-actions"><button class="report-action" onclick="openEvalTrace('${jsArg(traceId)}','summary',this)">Trace 总览</button><button class="report-action" onclick="openEvalTrace('${jsArg(traceId)}','sql',this)">SQL</button><button class="report-action" onclick="openEvalTrace('${jsArg(traceId)}','permission',this)">权限</button></div>`:''}
+  </article>`;
+}
+function evalRunHtml(run){
+  const s=evalRunSummary(run);
+  return `${stateBanner('success','评测已完成','结果已转换为质量面板，可直接下钻 Trace 证据。',[run.id||'eval-run',run.status||'success'])}
+  <div class="eval-run-shell">
+    <section class="eval-run-main">
+      <div class="metric-grid tight">${metricCard('用例数',s.count,'本次运行覆盖的问题')}${metricCard('平均分',fmt(s.avg),'0.80 以上视为通过')}${metricCard('通过',s.passed,'达到默认门槛')}${metricCard('需复核',s.needsReview,'低于默认门槛或需人工判断')}</div>
+      ${s.low.length?stateBanner('warn','存在需复核用例',`${s.low.length} 条结果低于 0.80，建议查看 Trace 与答案摘要。`):stateBanner('success','质量门槛通过','所有结果达到默认门槛。')}
+      <div class="eval-result-list">${(run.results||[]).length?(run.results||[]).map(evalResultCard).join(''):emptyState('暂无评测结果','该评测运行没有返回用例结果。')}</div>
+    </section>
+    <aside class="eval-trace-drawer"><div class="pane-title"><span>Trace</span><div><h2>评测证据</h2><p>点击左侧结果卡片查看对应执行链路。</p></div></div><div id="evalTraceBox">${emptyState('未选择 Trace','选择评测结果后会显示 SQL、权限检查和执行步骤。')}</div></aside>
+  </div>`;
+}
+function workflowRail(steps){
+  return `<div class="workflow-rail">${steps.map((s,i)=>`<div class="workflow-step"><span>${i+1}</span><div><b>${esc(s[0])}</b><p>${esc(s[1])}</p></div></div>`).join('')}</div>`;
+}
+function actionButton(label){
+  return `<button class="action-chip" onclick="handleNextAction('${jsArg(label)}')">${esc(label)}</button>`;
+}
+function traceButton(traceId){
+  return traceId?`<button class="trace-chip" onclick="openTrace('${jsArg(traceId)}')">打开 Trace</button>`:'';
+}
+function evidenceLinks(r, meta={}){
+  const traceId=r?.trace_id||meta.trace_id||'';
+  if(!traceId) return '';
+  const items=[['summary','总览'],['sql','SQL'],['permission','权限'],['steps','步骤']];
+  if((r?.tables||[]).length) items.push(['result','结果表']);
+  if((r?.charts||[]).length) items.push(['chart','图表']);
+  return `<div class="evidence-links" aria-label="回答证据定位"><span>证据</span>${items.map(([target,label])=>`<button onclick="openEvidence('${jsArg(traceId)}','${target}')">${esc(label)}</button>`).join('')}</div>`;
+}
+function feedbackControls(r, meta={}){
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const sessionId=meta.session_id||activeSessionId||'';
+  const messageId=meta.message_id||'';
+  if(!traceId && !sessionId) return '';
+  const ratings=[['correct','准确'],['partial','部分可用'],['wrong','有误'],['needs_review','需复核']];
+  return `<div class="feedback-bar" aria-label="回答反馈"><span>这次回答</span>${ratings.map(([rating,label])=>`<button onclick="sendFeedback('${rating}','${jsArg(traceId)}','${jsArg(sessionId)}','${jsArg(messageId)}',this)">${esc(label)}</button>`).join('')}<small class="feedback-status"></small></div>`;
+}
+function parseJsonMaybe(text){
+  try{return JSON.parse(text)}catch(e){return null}
+}
+function messageTraceId(message){
+  if(message?.content_type!=='agent_result') return '';
+  const parsed=parseJsonMaybe(message.content);
+  return parsed?.trace_id || '';
+}
+function latestTraceId(messages=[]){
+  for(let i=messages.length-1;i>=0;i--){
+    const id=messageTraceId(messages[i]);
+    if(id) return id;
+  }
+  return '';
+}
+function resultHtml(r, meta={}){
+  return `<div class="answer-title">${tag('Agent Response','green')}<b>${esc(r.answer||'已返回结果')}</b>${traceButton(r.trace_id||meta.trace_id)}</div>${evidenceLinks(r,meta)}${r.report_markdown?`<div class="report">${esc(r.report_markdown)}</div>`:''}${r.codex_task?`<div class="code">Codex Task: ${esc(r.codex_task.id)} / ${esc(r.codex_task.status)} / ${esc(r.codex_task.mode)}</div>`:''}${(r.warnings||[]).map(w=>`<div class="status-warn">${esc(w)}</div>`).join('')}${(r.tables||[]).map(t=>`<h4>${esc(displayKey(t.name||'表格'))}</h4>${renderTable(t.rows||[])}`).join('')}${(r.charts||[]).map(renderChart).join('')}${(r.next_actions||[]).length?`<div class="action-list">${r.next_actions.map(actionButton).join('')}</div>`:''}${feedbackControls(r,meta)}`;
+}
+function chatMessageHtml(message, sessionId=''){
+  if(message.role==='user') return `<div class="message user">${esc(message.content)}</div>`;
+  const parsed=message.content_type==='agent_result'?parseJsonMaybe(message.content):null;
+  return `<div class="message assistant rich-message">${parsed?resultHtml(parsed,{session_id:sessionId,message_id:message.id,trace_id:parsed.trace_id}):esc(message.content)}</div>`;
+}
+function sessionTitle(s){
+  return short(s.title||s.id||'新会话',42);
+}
+function auditActionClass(action){
+  const s=String(action||'').toLowerCase();
+  if(s.includes('failed')||s.includes('reject')||s.includes('error')) return 'red';
+  if(s.includes('approve')||s.includes('publish')||s.includes('login')||s.includes('query')) return 'green';
+  return 'amber';
+}
+function auditTimelineItem(log){
+  return `<div class="audit-item"><div>${tag(displayValue(log.action||'action'),auditActionClass(log.action))}</div><b>${esc(log.object_type||'platform')} / ${esc(log.object_id||'-')}</b><p>${esc(log.user_id||'anonymous')} · ${esc(timeText(log.created_at))} · ${esc(log.request_id||'no-request')}</p></div>`;
+}
+function rowPrimaryValue(rows){
+  const row=(rows||[])[0]||{};
+  const keys=Object.keys(row).filter(k=>k!=='error');
+  return keys.length?row[keys[0]]:'-';
+}
+function widgetHasError(w){return (w.rows||[]).some(r=>r&&r.error)}
+function widgetErrorText(w){return ((w.rows||[]).find(r=>r&&r.error)||{}).error||'Widget query failed'}
+function widgetChartType(w){return (w.chart_spec&&w.chart_spec.chart_type)||w.widget_type||'chart'}
+function widgetTypeLabel(w){
+  return ({metric_card:'指标卡',bar:'柱状图',line:'趋势图',table:'明细表'}[widgetChartType(w)]||displayValue(widgetChartType(w)));
+}
+function panelSummary(panel){
+  const widgets=panel.widgets||[];
+  const datasetsUsed=[...new Set(widgets.map(w=>w.dataset_id).filter(Boolean))];
+  return {
+    widgetCount:widgets.length,
+    failed:widgets.filter(widgetHasError).length,
+    metricWidgets:widgets.filter(w=>w.widget_type==='metric_card').length,
+    sqlWidgets:widgets.filter(w=>w.query_sql).length,
+    datasetsUsed,
+    chartTypes:topCounts(widgets.map(w=>({type:widgetChartType(w)})),'type',5)
+  };
+}
+function panelCockpit(panel){
+  const s=panelSummary(panel);
+  const freshness=timeText(panel.updated_at||panel.created_at);
+  const health=s.failed?`${s.failed} 个异常`:'全部正常';
+  return `<div class="panel-cockpit">
+    ${metricCard('Widget',s.widgetCount,'当前面板物化单元')}
+    ${metricCard('指标卡',s.metricWidgets,'首屏关键经营指标')}
+    ${metricCard('SQL 物化',s.sqlWidgets,'均经 SQL Guard 执行')}
+    ${metricCard('数据集',s.datasetsUsed.length,'涉及 '+(s.datasetsUsed.map(datasetName).join(' / ')||'暂无'))}
+    <div class="panel-health ${s.failed?'warn':'ok'}"><span>运行状态</span><b>${esc(health)}</b><p>${esc(freshness)} 更新 · ${displayValue(panel.status||'draft')}</p></div>
+    <div class="panel-health"><span>图表结构</span><div class="widget-type-strip">${s.chartTypes.length?s.chartTypes.map(([k,v])=>`<i>${esc(widgetTypeLabel({widget_type:k,chart_spec:{chart_type:k}}))}<b>${esc(v)}</b></i>`).join(''):'<em>暂无 Widget</em>'}</div></div>
+  </div>`;
 }
 function renderChart(chart){
   const spec = chart.spec || {}; const data = spec.data || chart.data || [];
@@ -41,9 +344,177 @@ function renderChart(chart){
     return `<div class="bar-row"><div class="muted">${esc(r[x])}</div><div><div class="bar" style="width:${width}%"></div></div><div>${fmt(val)}</div></div>`
   }).join('')}</div>`;
 }
-function agentOptions(type){return agents.filter(a=>!type || a.type===type).map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}
-function datasetOptions(){return datasets.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('')}
-function setActiveNav(page){document.querySelectorAll('#nav button').forEach(b=>b.classList.toggle('active', b.dataset.page===page)); const titles={dashboard:'总览',agents:'Agent Studio',chat:'智能问数',analysis:'深度研究',panels:'分析面板',dataops:'数据能力',semantic:'语义中心',codex:'Codex 运行台',reports:'报告中心',knowledge:'知识库',evals:'评测中心',audit:'审计日志'}; document.getElementById('pageTitle').innerText=titles[page]||page;}
+function agentOptions(type){return agents.filter(a=>!type || a.type===type).map(a=>`<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}
+function datasetOptions(selected=''){return datasets.map(d=>`<option value="${esc(d.id)}" ${d.id===selected?'selected':''}>${esc(d.name)}</option>`).join('')}
+const sampleSqlByDataset={
+  dataset_orders:'SELECT channel, SUM(revenue) AS revenue FROM sales_orders GROUP BY channel ORDER BY revenue DESC LIMIT 10',
+  dataset_business_daily:'SELECT region, SUM(revenue) AS revenue, AVG(risk_score) AS risk_score FROM business_metrics_daily GROUP BY region ORDER BY revenue DESC LIMIT 10',
+  dataset_campaigns:'SELECT channel, SUM(spend) AS spend, SUM(revenue) AS revenue FROM marketing_campaigns GROUP BY channel ORDER BY revenue DESC LIMIT 10',
+  dataset_products:'SELECT category, COUNT(*) AS product_count, AVG(price) AS avg_price FROM product_catalog GROUP BY category ORDER BY product_count DESC LIMIT 10',
+  dataset_tickets:'SELECT root_cause, COUNT(*) AS ticket_count FROM support_tickets GROUP BY root_cause ORDER BY ticket_count DESC LIMIT 10'
+};
+function defaultQueryDataset(){return datasets.find(d=>d.id==='dataset_orders')?.id || datasets[0]?.id || ''}
+function sampleSqlForDataset(id){const ds=datasets.find(d=>d.id===id); return sampleSqlByDataset[id] || `SELECT * FROM ${ds?.physical_table||'sales_orders'} LIMIT 20`}
+function syncWorkbenchSql(){const q=document.getElementById('qDataset'), sql=document.getElementById('qSql'); if(q&&sql) sql.value=sampleSqlForDataset(q.value)}
+function pageCommandDefinitions(){
+  return [
+    ['dashboard','总览','查看控制塔、运营闭环和关键状态','控制塔 首页 overview dashboard'],
+    ['agents','Agent Studio','浏览 Agent、Adapter、风险和试用入口','agent studio adapter'],
+    ['chat','智能问数','进入会话式问数、工具模式和 Trace 证据','chat 问数 data agent'],
+    ['analysis','深度研究','创建研究任务、审批计划并生成报告草稿','analysis 研究 report'],
+    ['panels','分析面板','打开物化经营面板和 Widget 结果','panel dashboard widgets'],
+    ['dataops','数据能力','查看数据目录、SQL Workbench、画像和质量规则','dataset sql workbench data quality'],
+    ['semantic','语义中心','治理术语、指标口径、查询模板和覆盖率','semantic terms metrics templates'],
+    ['codex','Codex 运行台','创建、审批、派发 Codex 工程任务','codex cli sdk task'],
+    ['reports','报告中心','查看报告资产、复核和发布状态','reports review publish'],
+    ['knowledge','知识库','查看知识库、版本和绑定入口','knowledge kb rag'],
+    ['evals','评测中心','运行评测集并查看回归结果','eval tests regression'],
+    ['audit','审计日志','查看登录、问数、审批和派发审计','audit logs trace']
+  ].map(([page,title,description,keywords])=>({kind:'page',title,description,keywords,page,run:()=>showPage(page)}));
+}
+function commandHaystack(item){
+  return [item.kind,item.title,item.description,item.keywords,item.id,item.name,item.code].filter(Boolean).join(' ').toLowerCase();
+}
+function commandMatch(item,q){
+  if(!q) return true;
+  return commandHaystack(item).includes(q.toLowerCase());
+}
+function askGlobalQuery(q){
+  showPage('chat');
+  setTimeout(()=>{
+    const input=document.getElementById('chatInput');
+    if(!input) return;
+    if(q) input.value=q;
+    q ? sendChat() : input.focus();
+  },60);
+}
+function openAgentCommand(agentId){
+  showPage('chat');
+  setTimeout(()=>{
+    const select=document.getElementById('chatAgent');
+    if(select) select.value=agentId;
+    document.getElementById('chatInput')?.focus();
+  },80);
+}
+function openDatasetCommand(datasetId){
+  showPage('dataops');
+  setTimeout(()=>{
+    const btn=document.querySelector('#page-dataops .tabs button[data-tab="profile"]');
+    dataTab('profile',btn);
+    setTimeout(()=>{
+      const select=document.getElementById('profileDataset');
+      if(select) select.value=datasetId;
+    },60);
+  },80);
+}
+function openMetricCommand(metric){
+  showPage('chat');
+  setTimeout(()=>{
+    const input=document.getElementById('chatInput');
+    if(input){input.value=`解释${metric.name||metric.code||'这个指标'}的业务口径和可用数据集`;sendChat();}
+  },80);
+}
+function buildCommandItems(q){
+  const items=[];
+  if(q) items.push({kind:'ask',title:'向 Data Agent 提问',description:q,keywords:'ask chat question',run:()=>askGlobalQuery(q)});
+  items.push(...pageCommandDefinitions());
+  items.push(...agents.map(a=>({kind:'agent',title:a.name,description:`试用 ${displayValue(a.type)} · ${displayValue(a.risk_level||'low')}`,keywords:[a.id,a.type,a.description,a.adapter_id].join(' '),run:()=>openAgentCommand(a.id)})));
+  items.push(...datasets.map(d=>({kind:'dataset',title:d.name,description:`打开数据画像 · ${d.physical_table||d.id}`,keywords:[d.id,d.business_domain,d.description,d.data_classification].join(' '),run:()=>openDatasetCommand(d.id)})));
+  items.push(...metrics.map(m=>({kind:'metric',title:m.name,description:`解释指标口径 · ${m.code||m.id}`,keywords:[m.id,m.code,m.formula,m.dataset_id].join(' '),run:()=>openMetricCommand(m)})));
+  const prompts=['本月收入最高的渠道有哪些？','按区域统计本月收入','客户工单根因分布是什么？','解释收入指标口径','给我生成一个经营总览面板','帮我创建一个 Codex 任务，开发面板导出功能'];
+  items.push(...prompts.map(p=>({kind:'prompt',title:p,description:'推荐问题',keywords:'prompt question sample',run:()=>askGlobalQuery(p)})));
+  return items.filter(item=>commandMatch(item,q)).slice(0,12);
+}
+function renderCommandMenu(){
+  const input=document.getElementById('globalSearch'), menu=document.getElementById('commandMenu');
+  if(!input||!menu||document.getElementById('app')?.classList.contains('hidden')) return;
+  const q=input.value.trim();
+  commandItems=buildCommandItems(q);
+  commandIndex=0;
+  input.setAttribute('aria-expanded','true');
+  menu.classList.remove('hidden');
+  menu.innerHTML=`<div class="command-head"><b>全局指挥入口</b><span>Ctrl/⌘ K</span></div>${commandItems.length?commandItems.map((item,i)=>`<button role="option" aria-selected="${i===commandIndex}" class="command-item ${i===commandIndex?'active':''}" onmousedown="event.preventDefault()" onclick="runCommandItem(${i})"><span>${esc(displayValue(item.kind))}</span><div><b>${esc(item.title)}</b><p>${esc(item.description||'')}</p></div></button>`).join(''):emptyState('没有匹配结果','换一个页面、Agent、数据集、指标或业务问题试试。')}`;
+}
+function updateCommandActive(){
+  document.querySelectorAll('#commandMenu .command-item').forEach((b,i)=>{
+    b.classList.toggle('active',i===commandIndex);
+    b.setAttribute('aria-selected',String(i===commandIndex));
+  });
+}
+function hideCommandMenu(){
+  const input=document.getElementById('globalSearch'), menu=document.getElementById('commandMenu');
+  if(input) input.setAttribute('aria-expanded','false');
+  if(menu) menu.classList.add('hidden');
+}
+function runCommandItem(index=commandIndex){
+  const item=commandItems[index];
+  hideCommandMenu();
+  if(item){item.run(); return;}
+  globalJump();
+}
+function handleGlobalSearchKey(e){
+  if(e.key==='Escape'){hideCommandMenu();return;}
+  if(e.key==='ArrowDown'){e.preventDefault(); if(!commandItems.length) renderCommandMenu(); commandIndex=Math.min(commandItems.length-1,commandIndex+1); updateCommandActive(); return;}
+  if(e.key==='ArrowUp'){e.preventDefault(); commandIndex=Math.max(0,commandIndex-1); updateCommandActive(); return;}
+  if(e.key==='Enter'){e.preventDefault(); commandItems.length?runCommandItem(commandIndex):globalJump();}
+}
+function setActiveNav(page){
+  document.querySelectorAll('#nav button').forEach(b=>{
+    const active=b.dataset.page===page;
+    b.classList.toggle('active',active);
+    if(active) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
+  });
+  const titles={dashboard:'总览',agents:'Agent Studio',chat:'智能问数',analysis:'深度研究',panels:'分析面板',dataops:'数据能力',semantic:'语义中心',codex:'Codex 运行台',reports:'报告中心',knowledge:'知识库',evals:'评测中心',audit:'审计日志'};
+  document.getElementById('pageTitle').innerText=titles[page]||page;
+}
+function syncSidebarA11y(){
+  const app=document.getElementById('app'); if(!app) return;
+  const open=app.classList.contains('sidebar-open');
+  const mobile=window.matchMedia('(max-width: 760px)').matches;
+  const btn=document.getElementById('mobileMenu');
+  const sidebar=document.querySelector('.sidebar');
+  if(!mobile && open) app.classList.remove('sidebar-open');
+  if(btn) btn.setAttribute('aria-expanded',String(mobile && open));
+  if(sidebar){
+    sidebar.setAttribute('aria-hidden',String(mobile && !open));
+    sidebar.toggleAttribute('inert',mobile && !open);
+  }
+}
+function sidebarFocusables(){
+  return Array.from(document.querySelectorAll('.sidebar button,.sidebar [href],.sidebar input,.sidebar select,.sidebar textarea,.sidebar [tabindex]:not([tabindex="-1"])'))
+    .filter(el=>!el.disabled && el.offsetParent!==null);
+}
+function toggleSidebar(force){
+  const app=document.getElementById('app'); if(!app) return;
+  const open=typeof force==='boolean'?force:!app.classList.contains('sidebar-open');
+  const btn=document.getElementById('mobileMenu');
+  if(open && btn) lastSidebarTrigger=btn;
+  app.classList.toggle('sidebar-open',open);
+  syncSidebarA11y();
+  if(open && window.matchMedia('(max-width: 760px)').matches) requestAnimationFrame(()=>sidebarFocusables()[0]?.focus());
+  if(!open && lastSidebarTrigger && window.matchMedia('(max-width: 760px)').matches) lastSidebarTrigger.focus();
+}
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){
+    e.preventDefault();
+    const input=document.getElementById('globalSearch');
+    input?.focus();
+    renderCommandMenu();
+    return;
+  }
+  if(e.key==='Escape') toggleSidebar(false);
+  const app=document.getElementById('app');
+  if(e.key!=='Tab' || !app?.classList.contains('sidebar-open') || !window.matchMedia('(max-width: 760px)').matches) return;
+  const focusables=sidebarFocusables();
+  if(!focusables.length) return;
+  const first=focusables[0], last=focusables[focusables.length-1];
+  if(e.shiftKey && document.activeElement===first){e.preventDefault(); last.focus();}
+  else if(!e.shiftKey && document.activeElement===last){e.preventDefault(); first.focus();}
+});
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.top-actions')) hideCommandMenu();
+});
+window.addEventListener('resize',syncSidebarA11y);
 async function refreshCatalog(){agents = await api('/api/agents'); datasets = await api('/api/datasets').catch(()=>[]); metrics = await api('/api/metrics').catch(()=>[]);}
 
 async function login(){
@@ -61,111 +532,644 @@ async function autoLogin(){
   try{currentUser=await api('/api/auth/me');document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');document.getElementById('currentUser').innerText=`${currentUser.name} / ${(currentUser.roles||[]).join(',')}`;await bootstrap();}catch(e){localStorage.removeItem('dap_token')}
 }
 async function bootstrap(){await refreshCatalog(); showPage('dashboard');}
+function resetPageScroll(){
+  document.querySelector('.main')?.scrollTo({top:0,left:0});
+  window.scrollTo({top:0,left:0});
+}
 function showPage(name){
   activePage=name; setActiveNav(name);
+  toggleSidebar(false);
   document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
-  document.getElementById('page-'+name).classList.remove('hidden');
+  const page=document.getElementById('page-'+name);
+  if(!page.innerHTML.trim()) page.innerHTML=loadingState();
+  page.classList.remove('hidden');
+  resetPageScroll();
   const renderers={dashboard:renderDashboard,agents:renderAgents,chat:renderChat,analysis:renderAnalysis,panels:renderPanels,dataops:renderDataOps,semantic:renderSemantic,codex:renderCodex,reports:renderReports,knowledge:renderKnowledge,evals:renderEvals,audit:renderAudit};
-  renderers[name] && renderers[name]();
+  const rendered=renderers[name] && renderers[name]();
+  Promise.resolve(rendered).finally(()=>requestAnimationFrame(resetPageScroll));
 }
-function globalJump(){const q=(document.getElementById('globalSearch').value||'').trim(); if(!q){showPage('chat');return} showPage('chat'); setTimeout(()=>{document.getElementById('chatInput').value=q; sendChat();},50)}
+function globalJump(){const q=(document.getElementById('globalSearch').value||'').trim(); hideCommandMenu(); askGlobalQuery(q)}
 
 async function renderDashboard(){
   const stats=await api('/api/admin/stats').catch(()=>({counts:{agents:agents.length,datasets:datasets.length,metrics:metrics.length}}));
   const counts=stats.counts||stats;
   const codexDiag=await api('/api/codex/diagnostics').catch(()=>({}));
   const p=document.getElementById('page-dashboard');
-  p.innerHTML=`<h1>独立数据智能体工作台</h1>
-  <div class="grid">${Object.entries(counts).slice(0,8).map(([k,v])=>`<div class="card"><div class="muted">${esc(k)}</div><div class="metric">${esc(v)}</div></div>`).join('')}</div>
-  <div class="grid3" style="margin-top:14px">
-    ${card('完整 Agent 套件', `<p>内置 ${agents.length} 个 Agent：总控路由、智能问数、工单归因、深度研究、风险识别、数据画像、数据质量、语义治理、面板生成、报告和 Codex 工程 Agent。</p><div>${tag('Agent Gateway')}${tag('Trace')}${tag('RBAC')}</div>`)}
-    ${card('数据能力面板', `<p>内置数据目录、指标语义、查询模板、SQL Workbench、数据画像、数据业务规则、CSV 导入、分析面板和 SQL Guard。</p><div>${tag('SQL Guard','green')}${tag('DQM')}${tag('Semantic')}</div>`)}
-    ${card('Codex 运行状态', `<p>CLI：${codexDiag.cli?.path?esc(codexDiag.cli.path):'未检测'} / SDK：${codexDiag.sdk?.module_found?'已检测':'未检测'} / 默认模式：${esc(codexDiag.mode_default||'-')}</p><div>${tag('mock')}${tag('http')}${tag('cli')}${tag('sdk')}</div>`)}
+  const metricOrder=[
+    ['agents','可用 Agent','覆盖问数、研究、治理、报告与工程派发'],
+    ['sessions','会话','当前演示环境累计会话'],
+    ['tasks','工程任务','Codex 任务池'],
+    ['traces','Trace','可追溯执行链路'],
+    ['reports','报告','AI 生成报告资产'],
+    ['eval_sets','评测集','回归与质量评估'],
+    ['feedback','反馈','业务侧闭环输入'],
+    ['audit_logs','审计','关键动作留痕']
+  ];
+  const route=['业务提问','总控路由','SQL Guard','数据/知识/Codex','Trace 证据','审计留痕'];
+  const sampleQuestions=['本月收入最高的渠道有哪些？','客户工单根因分布是什么？','当前经营风险最高的区域有哪些？','给我生成一个经营总览面板'];
+  p.innerHTML=`${pageHeader('独立数据智能体控制塔','把问数、数据治理、深度研究、报告产出和 Codex 工程任务放在同一个可审计工作台里。',['RBAC','SQL Guard','Trace','Approval Flow'])}
+  <div class="dashboard-hero">
+    <div>
+      <div class="eyebrow">OPERATING LOOP</div>
+      <h2>业务问题进入 Agent Gateway，结果回到 Trace 与审计闭环。</h2>
+      <p>面向业务用户保留答案、图表和建议；面向数据与平台人员暴露 SQL、工具调用、审批和执行证据。</p>
+      <div class="hero-actions"><button onclick="showPage('chat')">开始问数</button><button class="secondary" onclick="showPage('dataops')">查看数据资产</button><button class="ghost" onclick="showPage('codex')">进入 Codex 运行台</button></div>
+    </div>
+    <div class="control-loop">${route.map((x,i)=>`<div class="loop-step"><span>${i+1}</span>${esc(x)}</div>`).join('')}</div>
   </div>
-  <div class="card" style="margin-top:14px"><h3>一键验证路径</h3><div class="stepper"><span>总控 Agent 提问</span><span>查看 SQL/Trace</span><span>打开分析面板</span><span>运行数据质量</span><span>创建 Codex 工程任务</span><span>审批并派发</span></div></div>
-  <div class="grid2" style="margin-top:14px"><div class="card"><h3>推荐问题</h3>${['本月收入最高的渠道有哪些？','客户工单根因分布是什么？','当前经营风险最高的区域有哪些？','给我生成一个经营总览面板','帮我创建一个 Codex 任务，优化智能问数页面'].map(q=>`<button class="ghost" style="margin:4px" onclick="showPage('chat');setTimeout(()=>askPreset('${q.replace(/'/g,"\\'")}'),40)">${esc(q)}</button>`).join('')}</div><div class="card"><h3>Agent 编排链路</h3><div class="agent-flow"><div class="agent-node">用户问题</div><span class="arrow">→</span><div class="agent-node">总控路由</div><span class="arrow">→</span><div class="agent-node">数据/知识/报告/Codex</div><span class="arrow">→</span><div class="agent-node">Trace + 审计</div></div></div></div>`;
+  <div class="metric-grid">${metricOrder.map(([k,label,note])=>metricCard(label,counts[k]??0,note)).join('')}</div>
+  <div class="grid3 section-gap">
+    ${card('Agent 套件', `<p>内置 ${agents.length} 个 Agent，覆盖总控路由、问数、工单归因、深度研究、风险识别、数据画像、数据质量、语义治理、面板生成、报告和 Codex 工程 Agent。</p><div>${tag('Agent Gateway')}${tag('Trace')}${tag('RBAC')}</div>`)}
+    ${card('数据能力', `<p>数据目录、指标语义、查询模板、只读 SQL Workbench、数据画像、业务规则和 CSV 导入统一进入治理工作台。</p><div>${tag('SQL Guard','green')}${tag('DQM')}${tag('Semantic')}</div>`)}
+    ${card('Codex 运行状态', `<p>CLI：${codexDiag.cli?.path?esc(codexDiag.cli.path):'未检测'}<br/>SDK：${codexDiag.sdk?.module_found?'已检测':'未检测'}<br/>默认模式：${esc(codexDiag.mode_default||'-')}</p><div>${statusTag(codexDiag.mode_default||'mock')}${tag('approval','amber')}${tag('handoff')}</div>`)}
+  </div>
+  <div class="grid2 section-gap">
+    <div class="card action-card"><h3>推荐验证问题</h3><div class="prompt-grid">${sampleQuestions.map(q=>`<button class="prompt-pill" onclick="showPage('chat');setTimeout(()=>askPreset('${jsArg(q)}'),40)">${esc(q)}</button>`).join('')}</div></div>
+    <div class="card"><h3>关键验证路径</h3><div class="stepper">${['总控 Agent 提问','查看 SQL / Trace','打开分析面板','运行数据质量','创建 Codex 工程任务','审批并派发'].map(x=>`<span>${esc(x)}</span>`).join('')}</div></div>
+  </div>`;
 }
 
 async function renderAgents(){
   const groups={}; agents.forEach(a=>{groups[a.type]=groups[a.type]||[];groups[a.type].push(a)});
-  document.getElementById('page-agents').innerHTML=`<h1>Agent Studio</h1><div class="toolbar">${tag('内置 '+agents.length+' 个 Agent','green')}${tag('可接 Dify / SuperSonic / DB-GPT / RAGFlow')}${tag('Codex CLI / SDK')}</div>${Object.entries(groups).map(([type,list])=>`<h2>${esc(type)}</h2><div class="grid3">${list.map(a=>`<div class="card"><h3>${esc(a.name)}</h3><p>${esc(a.description)}</p><div>${tag(a.type)}${tag(a.status,'green')}${tag(a.risk_level,a.risk_level==='high'?'amber':'')}</div><div class="muted" style="margin:10px 0">Adapter：${esc(a.adapter_id||'-')} / 版本：${esc(a.version||'-')}</div><button class="secondary" onclick="showPage('chat');setTimeout(()=>{document.getElementById('chatAgent').value='${a.id}'},60)">试用</button><button class="ghost" onclick="openAgentDetail('${a.id}')">详情</button></div>`).join('')}</div>`).join('')}<div id="agentDetail"></div>`;
+  const highRisk=agents.filter(a=>a.risk_level==='high').length;
+  document.getElementById('page-agents').innerHTML=`${pageHeader('Agent Studio','按能力域查看内置 Agent、风险等级、Adapter 绑定和可试用入口。',['Gateway','Adapters','RBAC'])}
+  <div class="metric-grid tight">${metricCard('Agent 总数',agents.length,'当前可用能力单元')}${metricCard('能力类型',Object.keys(groups).length,'路由、问数、研究、治理等')}${metricCard('高风险 Agent',highRisk,'需保留审批和审计')}${metricCard('外部 Adapter',agents.filter(a=>a.adapter_id).length,'可接入 Dify / RAGFlow 等')}</div>
+  <div class="agent-sections section-gap">${Object.entries(groups).map(([type,list])=>`<section class="type-section"><div class="type-heading"><div><span>${esc(type)}</span><h2>${esc(displayValue(type))}</h2></div>${tag(`${list.length} agents`)}</div><div class="agent-grid">${list.map(agentCard).join('')}</div></section>`).join('')}</div><div id="agentDetail"></div>`;
 }
 async function openAgentDetail(id){
-  const a=await api('/api/agents/'+id); document.getElementById('agentDetail').innerHTML=`<div class="card" style="margin-top:14px"><h3>${esc(a.name)} / 详情</h3><div class="grid2"><div>${renderTable(a.versions||[])}</div><div><h4>知识绑定</h4>${renderTable(a.knowledge_bindings||[])}</div></div></div>`; window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
+  const a=await api('/api/agents/'+id); document.getElementById('agentDetail').innerHTML=`<div class="detail-panel section-gap"><div class="card-heading"><div><h3>${esc(a.name)} / 详情</h3><p class="muted">${esc(a.description||'')}</p></div><div>${tag(a.type||'agent')}${statusTag(a.status)}${statusTag(a.risk_level)}</div></div><div class="grid2"><div><h4>版本记录</h4>${renderTable(a.versions||[],{columns:['version','status','created_at','description'],limit:20})}</div><div><h4>知识绑定</h4>${renderTable(a.knowledge_bindings||[],{limit:20})}</div></div></div>`; window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});
 }
 
 function renderChat(){
-  document.getElementById('page-chat').innerHTML=`<div class="layout-3"><div class="pane"><h2>智能问数</h2><label>Agent</label><select id="chatAgent">${agentOptions()}</select><h3>推荐问题</h3>${['本月收入最高的渠道有哪些？','按区域统计本月收入','近三个月收入趋势如何？','客户工单根因分布是什么？','当前经营风险最高的区域有哪些？','运行订单数据质量规则','解释收入指标口径','帮我创建一个 Codex 任务，开发面板导出功能'].map(q=>`<button class="ghost" style="width:100%;margin:5px 0" onclick="askPreset('${q.replace(/'/g,"\\'")}')">${esc(q)}</button>`).join('')}</div><div class="pane"><div id="chatMessages"><div class="message assistant">选择“数据智能体总控 Agent”后可自动路由到问数、工单归因、异常识别、面板、语义、数据质量或 Codex。</div></div><div class="chat-input"><input id="chatInput" placeholder="输入业务问题，或输入开发需求让 Codex Agent 生成任务" onkeydown="if(event.key==='Enter')sendChat()"/><button onclick="sendChat()">发送</button></div></div><div class="pane"><h2>Trace 证据链</h2><div id="traceBox" class="muted">暂无 Trace</div></div></div>`;
+  const prompts=['本月收入最高的渠道有哪些？','按区域统计本月收入','近三个月收入趋势如何？','客户工单根因分布是什么？','解释收入指标口径','帮我创建一个 Codex 任务，开发面板导出功能'];
+  document.getElementById('page-chat').innerHTML=`${pageHeader('智能问数','像 ChatGPT 一样从一个会话入口完成提问、工具选择、上下文绑定和证据复核。',['Sessions','Tools','Trace'])}
+  <div class="assistant-shell">
+    <aside class="session-rail">
+      <button class="new-chat" onclick="startNewChat()">新建对话</button>
+      <div class="rail-title">最近会话</div>
+      <div id="chatSessionList">${inlineLoading('正在读取会话')}</div>
+      <div class="context-card">
+        <b>工作上下文</b>
+        <label class="field-label" for="chatAgent">Agent</label><select id="chatAgent" onchange="detachChatSessionForAgent()">${agentOptions()}</select>
+        <label class="field-label" for="chatDataset">数据集</label><select id="chatDataset"><option value="">自动选择</option>${datasetOptions()}</select>
+        <label class="field-label" for="traceDepth">证据深度</label><select id="traceDepth"><option value="standard">标准 Trace</option><option value="full">完整证据</option></select>
+      </div>
+    </aside>
+    <section class="chat-stage">
+      <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">新对话</b></div><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div></div>
+      <div id="chatMessages" class="chat-thread">${chatEmptyState()}</div>
+      <div class="composer-card">
+        <div class="prompt-list compact">${prompts.map(promptButton).join('')}</div>
+        <div class="composer-row"><textarea id="chatInput" rows="2" placeholder="询问数据、要求生成图表、解释指标，或创建工程任务" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button onclick="sendChat(this)" aria-label="发送消息">发送</button></div>
+        <div class="composer-meta"><span>Enter 发送，Shift+Enter 换行</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
+      </div>
+    </section>
+    <aside class="evidence-drawer trace-pane">
+      <div class="pane-title"><span>Trace</span><div><h2>证据</h2><p>SQL、工具调用和执行步骤在这里复核。</p></div></div>
+      <div id="traceBox">${emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。')}</div>
+    </aside>
+  </div>`;
   const router=agents.find(a=>a.id==='agent_router'); if(router) document.getElementById('chatAgent').value=router.id;
+  refreshChatSessions().catch(()=>{document.getElementById('chatSessionList').innerHTML=emptyState('会话读取失败','仍可直接开始新对话。')});
 }
-function askPreset(q){document.getElementById('chatInput').value=q;sendChat()}
-async function sendChat(){
-  const input=document.getElementById('chatInput'); const msg=input.value.trim(); if(!msg) return; const agent_id=document.getElementById('chatAgent').value;
-  const box=document.getElementById('chatMessages'); box.innerHTML+=`<div class="message user">${esc(msg)}</div>`; input.value='';
+function chatEmptyState(){
+  return `<div class="chat-welcome"><div class="assistant-mark">DA</div><h2>今天要分析什么？</h2><p>选择数据上下文后直接提问。业务答案留在中间，SQL、工具和审批证据留在右侧。</p></div>`;
+}
+function setToolMode(mode,btn){
+  document.querySelectorAll('#toolMode button').forEach(b=>b.classList.toggle('active',b===btn||b.dataset.mode===mode));
+}
+function selectedChatContext(){
+  return {
+    dataset_id:document.getElementById('chatDataset')?.value||null,
+    tool_mode:document.querySelector('#toolMode button.active')?.dataset.mode||'auto',
+    evidence_depth:document.getElementById('traceDepth')?.value||'standard'
+  };
+}
+function renderSessionList(){
+  const box=document.getElementById('chatSessionList');
+  if(!box) return;
+  box.innerHTML=chatSessions.length?chatSessions.slice(0,24).map(s=>`<button class="session-item ${s.id===activeSessionId?'active':''}" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))}</span></button>`).join(''):emptyState('暂无历史会话','发送第一条消息后会自动保存。');
+}
+async function refreshChatSessions(){
+  chatSessions=await api('/api/sessions').catch(()=>[]);
+  renderSessionList();
+}
+function startNewChat(){
+  activeSessionId='';
+  currentTrace=null;
+  const title=document.getElementById('chatSessionTitle'); if(title) title.innerText='新对话';
+  const box=document.getElementById('chatMessages'); if(box) box.innerHTML=chatEmptyState();
+  const trace=document.getElementById('traceBox'); if(trace) trace.innerHTML=emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。');
+  renderSessionList();
+  requestAnimationFrame(()=>document.getElementById('chatInput')?.focus());
+}
+function detachChatSessionForAgent(){
+  if(activeSessionId) startNewChat();
+}
+async function loadChatSession(id){
+  const box=document.getElementById('chatMessages');
+  if(box) box.innerHTML=inlineLoading('正在加载会话');
   try{
-    const data=await api('/api/chat/query',{method:'POST',body:JSON.stringify({message:msg,agent_id})}); const r=data.result||{};
-    box.innerHTML+=`<div class="message assistant"><b>${esc(r.answer||'已返回结果')}</b>${r.report_markdown?`<div class="report">${esc(r.report_markdown)}</div>`:''}${r.codex_task?`<div class="code">Codex Task: ${esc(r.codex_task.id)} / ${esc(r.codex_task.status)} / ${esc(r.codex_task.mode)}</div>`:''}${(r.warnings||[]).map(w=>`<div class="status-warn">${esc(w)}</div>`).join('')}${(r.tables||[]).map(t=>`<h4>${esc(t.name||'表格')}</h4>${renderTable(t.rows||[])}`).join('')}${(r.charts||[]).map(renderChart).join('')}${(r.next_actions||[]).length?`<div class="stepper">${r.next_actions.map(x=>`<span>${esc(x)}</span>`).join('')}</div>`:''}</div>`;
-    await loadTrace(data.trace_id);
-  }catch(e){box.innerHTML+=`<div class="message assistant"><span class="status-failed">${esc(e.message)}</span></div>`}
+    const session=await api('/api/sessions/'+id);
+    activeSessionId=session.id;
+    const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=session.title||session.id;
+    const agentSelect=document.getElementById('chatAgent'); if(agentSelect&&session.agent_id) agentSelect.value=session.agent_id;
+    const messages=session.messages||[];
+    if(box) box.innerHTML=messages.length?messages.map(m=>chatMessageHtml(m,session.id)).join(''):chatEmptyState();
+    const traceId=latestTraceId(messages);
+    const trace=document.getElementById('traceBox');
+    if(traceId){
+      if(trace) trace.innerHTML=inlineLoading('正在恢复历史 Trace');
+      await openTrace(traceId);
+    }else{
+      currentTrace=null;
+      if(trace) trace.innerHTML=emptyState('暂无可恢复 Trace','历史会话未包含 Trace ID；发送新问题后会刷新本轮证据。');
+    }
+    await refreshChatSessions();
+    box?.scrollTo({top:box.scrollHeight});
+  }catch(e){
+    if(box) box.innerHTML=stateBanner('error','会话加载失败',e.message);
+  }
+}
+function askPreset(q){const input=document.getElementById('chatInput'); if(input) input.value=q;sendChat()}
+function currentQuestionText(){
+  return currentTrace?.input || document.getElementById('chatSessionTitle')?.innerText || '当前问题';
+}
+async function sendFeedback(rating, traceId='', sessionId='', messageId='', btn){
+  const bar=btn?.closest('.feedback-bar');
+  const status=bar?.querySelector('.feedback-status');
+  setBusy(btn,true);
+  try{
+    await api('/api/chat/feedback',{method:'POST',body:JSON.stringify({session_id:sessionId||null,message_id:messageId||null,trace_id:traceId||null,rating,feedback_type:'answer_quality',comment:''})});
+    bar?.querySelectorAll('button').forEach(b=>b.classList.toggle('selected',b===btn));
+    if(status) status.innerText='已记录';
+    toast('反馈已记录');
+  }catch(e){
+    if(status) status.innerText='提交失败';
+    toast('反馈失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function handleNextAction(label){
+  const text=String(label||'');
+  const q=currentQuestionText();
+  if(text.includes('明细')){
+    showPage('dataops');
+    setTimeout(()=>dataTab('query',document.querySelector('#page-dataops .tabs button[data-tab="query"]')),80);
+    return;
+  }
+  if(text.includes('深度')||text.includes('分析')){
+    showPage('analysis');
+    setTimeout(()=>{const el=document.getElementById('analysisQuestion'); if(el) el.value=`基于“${q}”继续做深度分析，并给出经营建议。`;},80);
+    return;
+  }
+  if(text.includes('面板')){
+    showPage('panels');
+    return;
+  }
+  if(text.toLowerCase().includes('codex')||text.includes('改造')||text.includes('开发')){
+    showPage('codex');
+    setTimeout(()=>{
+      const title=document.getElementById('codexTitle'), prompt=document.getElementById('codexPrompt');
+      if(title) title.value='基于问数结果创建工程改造任务';
+      if(prompt) prompt.value=`围绕“${q}”对应的数据分析结果，设计并实现前端或数据面板改造；保持 RBAC、SQL Guard、Trace、审计和审批流不退化，并运行 python3 scripts/static_check.py。`;
+    },100);
+    return;
+  }
+  askGlobalQuery(text);
+}
+async function openTrace(traceId){
+  const trace=document.getElementById('traceBox');
+  if(!traceId) return;
+  if(trace) trace.innerHTML=inlineLoading('正在加载 Trace 证据');
+  try{
+    await loadTrace(traceId);
+  }catch(e){
+    currentTrace=null;
+    if(trace) trace.innerHTML=stateBanner('error','Trace 加载失败',e.message);
+  }
+}
+function evidenceSelector(target){
+  const map={summary:'#trace-summary',sql:'#trace-sql',permission:'[data-step-type=\"permission\"],[data-step-type=\"sql_guard\"]',steps:'#trace-steps',result:'[data-step-type=\"sql_execution\"],#trace-sql',chart:'[data-step-type=\"sql_execution\"],#trace-steps',tools:'#trace-tools'};
+  return map[target]||'#trace-summary';
+}
+function focusEvidenceIn(trace,target='summary'){
+  const el=trace?.querySelector(evidenceSelector(target))||trace?.querySelector('#trace-summary');
+  if(!el) return false;
+  trace.querySelectorAll('.evidence-focus').forEach(x=>x.classList.remove('evidence-focus'));
+  el.classList.add('evidence-focus');
+  el.scrollIntoView({behavior:'smooth',block:'center'});
+  return true;
+}
+function focusEvidence(target='summary'){
+  return focusEvidenceIn(document.getElementById('traceBox'),target);
+}
+async function openEvidence(traceId,target='summary'){
+  pendingEvidenceTarget=target;
+  await openTrace(traceId);
+}
+function traceHtml(trace){
+  const output=trace.output||{};
+  const steps=trace.steps||[], sql=trace.sql_runs||[], tools=trace.tool_calls||[];
+  return `<div id="trace-summary" class="trace-summary evidence-target">${statusTag(trace.status)}${tag(trace.agent_id||'-')}${tag(trace.agent_version||'-')}<span>${esc(output.answer_type||'answer')}</span></div>
+  <div class="trace-block evidence-target" id="trace-input"><h3>输入</h3><p>${esc(trace.input)}</p></div>
+  <div class="trace-block evidence-target" id="trace-sql"><h3>SQL</h3>${sql.length?sql.map((s,i)=>`<div class="sql-card evidence-target" data-sql-index="${i+1}"><pre class="code">${esc(s.sql_text)}</pre><div>${statusTag(s.status)}<span>${esc(s.row_count)} 行</span><span>${esc(s.duration_ms)}ms</span></div></div>`).join(''):emptyState('无 SQL','本次调用未触发 SQL 查询。')}</div>
+  <div class="trace-block evidence-target" id="trace-tools"><h3>工具调用</h3>${tools.length?tools.map((t,i)=>`<div class="trace-item evidence-target" data-tool-index="${i+1}"><b>${esc(t.adapter_id)}</b><div>${statusTag(t.status)}<span>${esc(t.duration_ms)}ms</span></div></div>`).join(''):emptyState('无工具调用','本次结果未调用外部工具。')}</div>
+  <div class="trace-block evidence-target" id="trace-steps"><h3>执行步骤</h3><div class="timeline">${steps.map(st=>`<div class="timeline-item evidence-target" data-step-type="${esc(st.step_type)}"><div class="timeline-dot">${esc(st.step_no)}</div><div><b>${esc(st.name)}</b><p>${esc(st.step_type)} / ${displayValue(st.status)}</p><details><summary>输出 JSON</summary><pre class="code">${esc(JSON.stringify(st.output_json,null,2))}</pre></details></div></div>`).join('')}</div></div>`;
+}
+async function openEvalTrace(traceId,target='summary',btn){
+  const box=document.getElementById('evalTraceBox');
+  if(!box||!traceId) return;
+  setBusy(btn,true);
+  box.innerHTML=inlineLoading('正在加载评测 Trace');
+  try{
+    const trace=await api('/api/traces/'+traceId);
+    box.innerHTML=traceHtml(trace);
+    requestAnimationFrame(()=>focusEvidenceIn(box,target));
+  }catch(e){
+    box.innerHTML=stateBanner('error','Trace 加载失败',e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function traceDrawer(id,title,text){
+  return `<aside class="trace-drawer-inline"><div class="pane-title"><span>Trace</span><div><h2>${esc(title)}</h2><p>${esc(text)}</p></div></div><div id="${esc(id)}">${emptyState('未选择 Trace','执行查询、画像或质量检查后会显示可审计证据。')}</div></aside>`;
+}
+function traceActions(traceId, handler='openDataTrace'){
+  return traceId?`<div class="trace-actions"><button class="report-action" onclick="${handler}('${jsArg(traceId)}','summary',this)">Trace 总览</button><button class="report-action" onclick="${handler}('${jsArg(traceId)}','sql',this)">SQL</button><button class="report-action" onclick="${handler}('${jsArg(traceId)}','permission',this)">权限</button><button class="report-action" onclick="${handler}('${jsArg(traceId)}','steps',this)">步骤</button></div>`:'';
+}
+async function openTraceInto(boxId,traceId,target='summary',btn,label='Trace'){
+  const box=document.getElementById(boxId);
+  if(!box||!traceId) return;
+  setBusy(btn,true);
+  box.innerHTML=inlineLoading(`正在加载${label}`);
+  try{
+    const trace=await api('/api/traces/'+traceId);
+    box.innerHTML=traceHtml(trace);
+    requestAnimationFrame(()=>focusEvidenceIn(box,target));
+  }catch(e){
+    box.innerHTML=stateBanner('error','Trace 加载失败',e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+async function openDataTrace(traceId,target='summary',btn){
+  return openTraceInto('dataTraceBox',traceId,target,btn,'数据操作 Trace');
+}
+async function openPanelTrace(traceId,target='summary',btn){
+  return openTraceInto('panelTraceBox',traceId,target,btn,'面板 Trace');
+}
+async function openCodexTrace(traceId,target='summary',btn){
+  return openTraceInto('codexTraceBox',traceId,target,btn,'Codex Trace');
+}
+async function sendChat(btn){
+  if(chatSending) return;
+  const input=document.getElementById('chatInput'); const msg=input.value.trim(); if(!msg) return; const agent_id=document.getElementById('chatAgent').value;
+  chatSending=true;
+  const sendButton=btn||document.querySelector('#page-chat .composer-row button');
+  setBusy(sendButton,true);
+  input.disabled=true;
+  const box=document.getElementById('chatMessages');
+  if(box.querySelector('.chat-welcome')) box.innerHTML='';
+  box.innerHTML+=`<div class="message user">${esc(msg)}</div>`; input.value='';
+  const pendingId='pending-'+Date.now();
+  box.innerHTML+=`<div id="${pendingId}" class="message assistant pending-message">${inlineLoading('Agent 正在路由和生成答案')}</div>`;
+  try{
+    const data=await api('/api/chat/query',{method:'POST',body:JSON.stringify({message:msg,agent_id,session_id:activeSessionId||null,context:selectedChatContext()})}); const r=data.result||{};
+    activeSessionId=data.session_id||activeSessionId;
+    const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=sessionTitle({title:msg});
+    document.getElementById(pendingId)?.remove();
+    box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id})}</div>`;
+    await openTrace(data.trace_id);
+    await refreshChatSessions();
+  }catch(e){const p=document.getElementById(pendingId); if(p) p.innerHTML=stateBanner('error','问数失败',e.message); else box.innerHTML+=`<div class="message assistant">${stateBanner('error','问数失败',e.message)}</div>`}
+  finally{chatSending=false; input.disabled=false; setBusy(sendButton,false)}
   box.scrollTop=box.scrollHeight;
 }
 async function loadTrace(traceId){
-  const trace=await api('/api/traces/'+traceId); currentTrace=trace; const output=trace.output||{};
-  const steps=trace.steps||[], sql=trace.sql_runs||[], tools=trace.tool_calls||[];
-  document.getElementById('traceBox').innerHTML=`<div>${tag(trace.status,trace.status==='success'?'green':'red')}${tag(trace.agent_id||'-')}${tag(trace.agent_version||'-')}</div><h3>输入</h3><div>${esc(trace.input)}</div><h3>输出</h3><div class="muted">${esc(output.answer_type||'-')}</div><h3>SQL</h3>${sql.length?sql.map(s=>`<div class="code">${esc(s.sql_text)}</div><div class="muted">${esc(s.status)} / ${s.row_count} 行 / ${s.duration_ms}ms</div>`).join(''):'<div class="muted">无 SQL</div>'}<h3>工具调用</h3>${tools.length?tools.map(t=>`<div class="card mini"><b>${esc(t.adapter_id)}</b><div class="muted">${esc(t.status)} / ${t.duration_ms}ms</div></div>`).join(''):'<div class="muted">无工具调用</div>'}<h3>步骤</h3>${steps.map(st=>`<div class="card mini"><b>${st.step_no}. ${esc(st.name)}</b><div class="muted">${esc(st.step_type)} / ${esc(st.status)}</div><pre class="code">${esc(JSON.stringify(st.output_json,null,2))}</pre></div>`).join('')}`;
+  const trace=await api('/api/traces/'+traceId); currentTrace=trace;
+  document.getElementById('traceBox').innerHTML=traceHtml(trace);
+  if(pendingEvidenceTarget) requestAnimationFrame(()=>{focusEvidence(pendingEvidenceTarget); pendingEvidenceTarget='';});
 }
 
 function renderAnalysis(){
-  document.getElementById('page-analysis').innerHTML=`<h1>深度研究</h1><div class="split"><div class="card"><h3>创建研究任务</h3><label>Agent</label><select id="analysisAgent">${agentOptions('analysis')}</select><label>研究问题</label><textarea id="analysisQuestion">分析本月收入变化的主要原因，并结合客户工单根因给出经营建议。</textarea><button onclick="runAnalysis()">创建任务</button><button class="secondary" onclick="approveLastTask()">审批上一个待审批任务</button><div id="analysisResult"></div></div><div class="card"><h3>深度研究设计</h3><div class="stepper"><span>分析计划</span><span>SQL 查询</span><span>工单补充</span><span>数据质量</span><span>报告草稿</span><span>人工复核</span></div><p class="muted">高风险研究默认进入 awaiting_approval，避免报告和建议直接进入执行链路。</p></div></div>`;
+  document.getElementById('page-analysis').innerHTML=`${pageHeader('深度研究','把复杂经营问题拆成计划、查询、补充证据、报告草稿和人工复核。',['Plan approval','Multi-step SQL','Report draft'])}
+  <div class="research-layout">
+    <div class="card form-shell"><h3>创建研究任务</h3><p class="muted">高风险研究默认进入待审批，审批后再执行查询和报告草稿生成。</p><label class="field-label" for="analysisAgent">Agent</label><select id="analysisAgent">${agentOptions('analysis')}</select><label class="field-label" for="analysisQuestion">研究问题</label><textarea id="analysisQuestion">分析本月收入变化的主要原因，并结合客户工单根因给出经营建议。</textarea><div class="toolbar"><button onclick="runAnalysis(this)">创建任务</button><button class="secondary" onclick="approveLastTask(this)">审批上一个待审批任务</button></div><div id="analysisResult"></div></div>
+    <div class="card research-playbook"><h3>研究编排</h3><div class="timeline static">${['分析计划','SQL 查询','工单补充','数据质量','报告草稿','人工复核'].map((x,i)=>`<div class="timeline-item"><div class="timeline-dot">${i+1}</div><div><b>${esc(x)}</b><p>${i<5?'系统生成证据并留痕':'人工确认后进入发布链路'}</p></div></div>`).join('')}</div><div class="approval-banner section-gap"><b>安全边界</b><span>研究任务不直接执行外部动作，结果进入 Trace、审计和报告复核。</span></div></div>
+  </div>`;
 }
-async function runAnalysis(){
-  try{const r=await api('/api/analysis/tasks',{method:'POST',body:JSON.stringify({question:analysisQuestion.value,agent_id:analysisAgent.value,require_plan_approval:true})}); lastAnalysisTaskId=r.task_id||r.id; document.getElementById('analysisResult').innerHTML=`<div class="message assistant">任务：${esc(lastAnalysisTaskId)} / 状态：${esc(r.status)}</div><pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`;}catch(e){toast(e.message)}
+async function runAnalysis(btn){
+  setBusy(btn,true); document.getElementById('analysisResult').innerHTML=inlineLoading('正在创建研究任务');
+  try{const r=await api('/api/analysis/tasks',{method:'POST',body:JSON.stringify({question:analysisQuestion.value,agent_id:analysisAgent.value,require_plan_approval:true})}); lastAnalysisTaskId=r.task_id||r.id; document.getElementById('analysisResult').innerHTML=`${stateBanner('pending','研究任务已创建','计划审批后继续执行查询和报告草稿。',[lastAnalysisTaskId,r.status||'pending'])}<pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`;}catch(e){document.getElementById('analysisResult').innerHTML=stateBanner('error','研究任务创建失败',e.message);toast(e.message)}
+  finally{setBusy(btn,false)}
 }
-async function approveLastTask(){if(!lastAnalysisTaskId)return toast('暂无任务'); const r=await api(`/api/analysis/tasks/${lastAnalysisTaskId}/approve-plan`,{method:'POST',body:JSON.stringify({comment:'页面审批'})}); document.getElementById('analysisResult').innerHTML=`<div class="message assistant">已审批并执行：${esc(lastAnalysisTaskId)}</div><pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`; if(r.trace_id) loadTrace(r.trace_id).catch(()=>{});}
+async function approveLastTask(btn){if(!lastAnalysisTaskId)return toast('暂无任务'); setBusy(btn,true); document.getElementById('analysisResult').innerHTML=inlineLoading('正在审批并执行研究计划'); try{const r=await api(`/api/analysis/tasks/${lastAnalysisTaskId}/approve-plan`,{method:'POST',body:JSON.stringify({comment:'页面审批'})}); document.getElementById('analysisResult').innerHTML=`${stateBanner('success','研究计划已审批','已进入执行链路并保留 Trace。',[lastAnalysisTaskId,r.trace_id||'no-trace'])}<pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`; if(r.trace_id) loadTrace(r.trace_id).catch(()=>{});}catch(e){document.getElementById('analysisResult').innerHTML=stateBanner('error','审批失败',e.message);toast(e.message)}finally{setBusy(btn,false)}}
 
 async function renderPanels(){
   const panels=await api('/api/data/panels').catch(()=>[]); const pid=panels[0]?.id||'panel_business_overview';
   let panel=await api('/api/data/panels/'+pid).catch(()=>null);
-  document.getElementById('page-panels').innerHTML=`<h1>分析面板</h1><div class="toolbar"><select id="panelSelect">${panels.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select><button onclick="renderPanelDetail()">打开</button><button class="secondary" onclick="showPage('chat');setTimeout(()=>askPreset('给我生成一个经营总览面板'),50)">让 Agent 生成</button></div><div id="panelDetail">${panel?panelHtml(panel):'<div class="muted">暂无面板</div>'}</div>`;
+  const options=panels.length?panels.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):(panel?`<option value="${esc(panel.id)}">${esc(panel.name)}</option>`:'');
+  const prompt='给我生成一个经营总览面板';
+  document.getElementById('page-panels').innerHTML=`${pageHeader('分析面板','以物化经营面板承接问数结果，展示指标卡、Top 图、风险图和生成 SQL。',['Widgets','Materialized view','Agent generated'])}<div class="panel-toolbar"><select id="panelSelect" aria-label="选择分析面板" ${options?'':'disabled'}>${options}</select><button onclick="renderPanelDetail()" ${options?'':'disabled'}>打开面板</button><button class="secondary" onclick="showPage('chat');setTimeout(()=>askPreset('${jsArg(prompt)}'),50)">让 Agent 生成</button></div><div id="panelDetail">${panel?panelHtml(panel):emptyState('暂无面板','当前没有可展示的分析面板。')}</div>`;
   if(panel) document.getElementById('panelSelect').value=pid;
+  if(panel?.trace_id) openPanelTrace(panel.trace_id,'sql',null).catch(()=>{});
 }
-async function renderPanelDetail(){const panel=await api('/api/data/panels/'+document.getElementById('panelSelect').value); document.getElementById('panelDetail').innerHTML=panelHtml(panel)}
-function panelHtml(panel){return `<div class="card"><h3>${esc(panel.name)}</h3><p class="muted">${esc(panel.description||'')}</p><div class="panel-grid">${(panel.widgets||[]).map(w=>`<div class="card widget"><h3>${esc(w.title)}</h3>${w.widget_type==='metric_card'?`<div class="metric">${esc((w.rows&&w.rows[0]&&Object.values(w.rows[0])[0])??'-')}</div>`:renderChart({title:w.title,spec:{data:w.rows||[],x:Object.keys((w.rows||[])[0]||{})[0],y:Object.keys((w.rows||[])[0]||{})[1]}})}<details><summary>SQL</summary><pre class="code">${esc(w.query_sql||'')}</pre></details></div>`).join('')}</div></div>`}
+async function renderPanelDetail(){const select=document.getElementById('panelSelect'); if(!select?.value) return; document.getElementById('panelDetail').innerHTML=inlineLoading('正在物化面板数据'); try{const panel=await api('/api/data/panels/'+select.value); document.getElementById('panelDetail').innerHTML=panelHtml(panel); if(panel.trace_id) openPanelTrace(panel.trace_id,'sql',null).catch(()=>{})}catch(e){document.getElementById('panelDetail').innerHTML=stateBanner('error','面板加载失败',e.message)}}
+function panelWidgetHtml(w){
+  const error=widgetHasError(w);
+  const chartType=widgetChartType(w);
+  const rows=w.rows||[];
+  const rowCount=error?0:rows.length;
+  const meta=[datasetName(w.dataset_id),metricName(w.metric_id),widgetTypeLabel(w)].filter(Boolean);
+  const chartSpec=Object.assign({},w.chart_spec||{},{data:rows,x:Object.keys(rows[0]||{})[0],y:Object.keys(rows[0]||{})[1]});
+  return `<article class="widget-card ${w.widget_type==='metric_card'?'metric-widget':''} ${error?'widget-error':''}">
+    <div class="card-heading"><div><h3>${esc(w.title)}</h3><div class="widget-meta">${meta.map(m=>tag(m)).join('')}</div></div>${error?statusTag('failed'):tag(widgetTypeLabel(w))}</div>
+    ${error?stateBanner('error','Widget 查询失败',widgetErrorText(w)):w.widget_type==='metric_card'?`<div class="widget-value"><span>${esc(displayValue(rowPrimaryValue(rows)))}</span><small>${esc(metricName(w.metric_id))}</small></div><div class="muted">由只读 SQL 物化生成，结果 ${esc(rowCount)} 行。</div>`:renderChart({title:w.title,spec:chartSpec})}
+    <div class="widget-foot"><span>${esc(rowCount)} rows</span><span>${esc(timeText(w.created_at))}</span></div>
+    <details><summary>SQL 与布局</summary><pre class="code">${esc(w.query_sql||'未配置 SQL')}</pre><div class="widget-json">${compactTags([`dataset: ${datasetName(w.dataset_id)}`,`metric: ${metricName(w.metric_id)}`,`chart: ${chartType}`],3)}</div></details>
+  </article>`;
+}
+function panelHtml(panel){
+  const widgets=panel.widgets||[];
+  const failed=widgets.filter(widgetHasError).length;
+  return `<div class="panel-workspace section-gap">
+    <section class="panel-shell">
+      <div class="panel-title"><div><h2>${esc(panel.name)}</h2><p>${esc(panel.description||'')}</p><div class="panel-meta">${tag(panel.business_domain||'Business')}${statusTag(panel.status||'draft')}${panel.trace_id?tag(panel.trace_id):''}${failed?tag(`${failed} failed`,'red'):tag('SQL Guard','green')}</div></div>${tag(`${widgets.length} widgets`)}</div>
+      ${panel.trace_id?traceActions(panel.trace_id,'openPanelTrace'):''}
+      ${panelCockpit(panel)}
+      <div class="panel-grid">${widgets.length?widgets.map(panelWidgetHtml).join(''):emptyState('暂无 Widget','该面板还没有配置可物化的图表或指标卡。')}</div>
+    </section>
+    ${traceDrawer('panelTraceBox','面板证据','复核面板物化 SQL、数据集权限、SQL Guard 和 Widget 生成步骤。')}
+  </div>`;
+}
 
 async function renderDataOps(){
-  document.getElementById('page-dataops').innerHTML=`<h1>数据能力</h1><div class="tabs"><button class="active" onclick="dataTab('catalog',this)">数据目录</button><button onclick="dataTab('query',this)">SQL Workbench</button><button onclick="dataTab('profile',this)">数据画像</button><button onclick="dataTab('quality',this)">数据质量</button><button onclick="dataTab('import',this)">CSV 导入</button></div><div id="dataTab"></div>`;
-  dataTab('catalog');
+  document.getElementById('page-dataops').innerHTML=`${pageHeader('数据能力','把数据目录、指标口径、只读 SQL、画像、质量规则和导入入口集中到一个治理面。',['Dataset Catalog','Metrics','SQL Guard'])}
+  <div class="tabs segmented"><button class="active" data-tab="catalog" onclick="dataTab('catalog',this)">数据目录</button><button data-tab="query" onclick="dataTab('query',this)">SQL Workbench</button><button data-tab="profile" onclick="dataTab('profile',this)">数据画像</button><button data-tab="quality" onclick="dataTab('quality',this)">数据质量</button><button data-tab="import" onclick="dataTab('import',this)">CSV 导入</button></div><div id="dataTab"></div>`;
+  dataTab('catalog',document.querySelector('#page-dataops .tabs button[data-tab="catalog"]'));
 }
 async function dataTab(name,btn){document.querySelectorAll('#page-dataops .tabs button').forEach(b=>b.classList.remove('active')); if(btn)btn.classList.add('active'); const box=document.getElementById('dataTab');
-  if(name==='catalog'){box.innerHTML=`<div class="grid2"><div class="card"><h3>数据集</h3>${renderTable(datasets)}</div><div class="card"><h3>指标</h3>${renderTable(metrics)}</div></div>`;}
-  if(name==='query'){box.innerHTML=`<div class="card"><h3>只读 SQL Workbench</h3><select id="qDataset">${datasetOptions()}</select><textarea id="qSql">SELECT channel, SUM(revenue) AS revenue FROM sales_orders GROUP BY channel ORDER BY revenue DESC LIMIT 10</textarea><button onclick="runSqlWorkbench()">执行</button><div id="sqlResult"></div></div>`;}
-  if(name==='profile'){box.innerHTML=`<div class="card"><h3>数据画像</h3><select id="profileDataset">${datasetOptions()}</select><button onclick="runProfile()">生成画像</button><div id="profileResult"></div></div>`;}
-  if(name==='quality'){const rules=await api('/api/data/quality-rules').catch(()=>[]);box.innerHTML=`<div class="card"><h3>数据业务规则</h3>${renderTable(rules)}<select id="qualityDataset"><option value="">全部数据集</option>${datasetOptions()}</select><button onclick="runQuality()">运行规则</button><div id="qualityResult"></div></div>`;}
-  if(name==='import'){box.innerHTML=`<div class="card"><h3>CSV 导入</h3><div class="form-row"><input id="csvName" value="导入数据集"/><input id="csvDomain" value="Imported"/></div><input id="csvFile" type="file" accept=".csv"/><button onclick="importCsv()">上传</button><div id="importResult"></div></div>`;}
+  if(name==='catalog'){box.innerHTML=`<div class="metric-grid tight">${metricCard('数据集',datasets.length,'已注册业务数据资产')}${metricCard('指标',metrics.length,'可复用口径与语义')}${metricCard('敏感数据集',datasets.filter(d=>d.data_classification==='confidential').length,'需保持 masking 与 RBAC')}${metricCard('业务域',new Set(datasets.map(d=>d.business_domain).filter(Boolean)).size,'跨域治理范围')}</div><div class="asset-grid section-gap">${datasets.map(datasetCard).join('')}</div><div class="card section-gap"><h3>指标口径</h3>${renderTable(metrics,{columns:['name','code','dataset_name','formula','time_grain','status'],limit:80})}</div>`;}
+  if(name==='query'){const defaultDs=defaultQueryDataset();box.innerHTML=`<div class="dataops-trace-layout"><div class="card form-shell"><h3>只读 SQL Workbench</h3><p class="muted">查询会经过 SQL Guard，只允许只读语句，结果保留 Trace。</p><label class="field-label" for="qDataset">数据集</label><select id="qDataset" onchange="syncWorkbenchSql()">${datasetOptions(defaultDs)}</select><label class="field-label" for="qSql">SQL</label><textarea id="qSql">${esc(sampleSqlForDataset(defaultDs))}</textarea><button onclick="runSqlWorkbench(this)">执行查询</button><div id="sqlResult"></div></div>${traceDrawer('dataTraceBox','SQL Guard 证据','复核只读 SQL、权限检查和执行步骤。')}<div class="card guard-card"><h3>执行护栏</h3><div class="stepper"><span>Read-only SQL</span><span>SQL Guard</span><span>Dataset Masking</span><span>Trace</span></div><p>适合验证业务口径、抽样分析和面板 SQL，不用于写入或绕过权限。</p></div></div>`;}
+  if(name==='profile'){box.innerHTML=`<div class="dataops-trace-layout"><div class="card form-shell"><h3>数据画像</h3><p class="muted">快速查看行数、字段数量、字段画像和样本记录。</p><label class="field-label" for="profileDataset">数据集</label><select id="profileDataset">${datasetOptions()}</select><button onclick="runProfile(this)">生成画像</button><div id="profileResult"></div></div>${traceDrawer('dataTraceBox','画像证据','查看画像任务、权限范围和执行输出。')}</div>`;}
+  if(name==='quality'){const rules=await api('/api/data/quality-rules').catch(()=>[]);box.innerHTML=`<div class="dataops-trace-layout"><div class="card"><h3>数据业务规则</h3>${renderTable(rules,{columns:['name','dataset_name','severity','status','description'],limit:80})}<div class="form-row section-gap"><select id="qualityDataset"><option value="">全部数据集</option>${datasetOptions()}</select><button onclick="runQuality(this)">运行规则</button></div><div id="qualityResult"></div></div>${traceDrawer('dataTraceBox','质量证据','复核运行规则、失败行统计和审计 Trace。')}</div>`;}
+  if(name==='import'){box.innerHTML=`<div class="card form-shell"><h3>CSV 导入</h3><p class="muted">导入后会刷新数据目录；生产环境仍需遵循数据分级和权限策略。</p><div class="form-row"><input id="csvName" value="导入数据集" aria-label="数据集名称"/><input id="csvDomain" value="Imported" aria-label="业务域"/></div><input id="csvFile" type="file" accept=".csv"/><button onclick="importCsv(this)">上传 CSV</button><div id="importResult"></div></div>`;}
 }
-async function runSqlWorkbench(){try{const r=await api('/api/data/query',{method:'POST',body:JSON.stringify({dataset_id:qDataset.value,sql:qSql.value,max_rows:200})});document.getElementById('sqlResult').innerHTML=`${renderTable(r.rows||[])}<div class="muted">Trace: ${esc(r.trace_id)}</div>`; if(r.trace_id) loadTrace(r.trace_id).catch(()=>{});}catch(e){document.getElementById('sqlResult').innerHTML=`<div class="status-failed">${esc(e.message)}</div>`}}
-async function runProfile(){const r=await api('/api/data/profile/'+profileDataset.value);document.getElementById('profileResult').innerHTML=`<div class="kpi-row"><div class="kpi"><div class="muted">数据集</div><b>${esc(r.dataset.name)}</b></div><div class="kpi"><div class="muted">行数</div><b>${r.row_count}</b></div><div class="kpi"><div class="muted">字段</div><b>${(r.fields||[]).length}</b></div></div><h3>字段画像</h3>${renderTable(r.fields||[])}<h3>样本</h3>${renderTable(r.sample_rows||[])}`}
-async function runQuality(){const r=await api('/api/data/quality/run',{method:'POST',body:JSON.stringify({dataset_id:qualityDataset.value||null,rule_ids:[]})});document.getElementById('qualityResult').innerHTML=`<div class="muted">Trace: ${esc(r.trace_id)}</div>${renderTable((r.results||[]).map(x=>({rule:x.rule.name,dataset:x.dataset.name,status:x.status,checked_rows:x.checked_rows,failed_rows:x.failed_rows,severity:x.rule.severity})))}`; if(r.trace_id) loadTrace(r.trace_id).catch(()=>{});}
-async function importCsv(){const fd=new FormData();fd.append('file',csvFile.files[0]); const url=`/api/data/import/csv?dataset_name=${encodeURIComponent(csvName.value)}&business_domain=${encodeURIComponent(csvDomain.value)}`; const r=await api(url,{method:'POST',body:fd,headers:{}});document.getElementById('importResult').innerHTML=`<pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`; await refreshCatalog();}
+async function runSqlWorkbench(btn){setBusy(btn,true);document.getElementById('sqlResult').innerHTML=inlineLoading('正在通过 SQL Guard 执行只读查询');try{const r=await api('/api/data/query',{method:'POST',body:JSON.stringify({dataset_id:qDataset.value,sql:qSql.value,max_rows:200})});document.getElementById('sqlResult').innerHTML=`${stateBanner('success','查询完成','SQL Guard 已放行，只读结果已返回。',[r.trace_id||'no-trace'])}${traceActions(r.trace_id)}${renderTable(r.rows||[])}<div class="muted">Trace: ${esc(r.trace_id)}</div>`; if(r.trace_id) openDataTrace(r.trace_id,'sql',null).catch(()=>{});}catch(e){document.getElementById('sqlResult').innerHTML=stateBanner('error','查询被拒绝或执行失败',e.message)}finally{setBusy(btn,false)}}
+async function runProfile(btn){setBusy(btn,true);document.getElementById('profileResult').innerHTML=inlineLoading('正在生成字段画像');try{const r=await api('/api/data/profile/'+profileDataset.value);document.getElementById('profileResult').innerHTML=`${stateBanner('success','画像已生成','字段统计、样本和敏感字段提示已返回。',[r.dataset.name,r.trace_id||'no-trace'])}${traceActions(r.trace_id)}<div class="kpi-row"><div class="kpi"><div class="muted">数据集</div><b>${esc(r.dataset.name)}</b></div><div class="kpi"><div class="muted">行数</div><b>${r.row_count}</b></div><div class="kpi"><div class="muted">字段</div><b>${(r.fields||[]).length}</b></div></div><h3>字段画像</h3>${renderTable(r.fields||[])}<h3>样本</h3>${renderTable(r.sample_rows||[])}`; if(r.trace_id) openDataTrace(r.trace_id,'summary',null).catch(()=>{});}catch(e){document.getElementById('profileResult').innerHTML=stateBanner('error','画像生成失败',e.message)}finally{setBusy(btn,false)}}
+async function runQuality(btn){setBusy(btn,true);document.getElementById('qualityResult').innerHTML=inlineLoading('正在运行数据质量规则');try{const r=await api('/api/data/quality/run',{method:'POST',body:JSON.stringify({dataset_id:qualityDataset.value||null,rule_ids:[]})});document.getElementById('qualityResult').innerHTML=`${stateBanner('success','质量规则已运行','结果已写入 Trace，可继续复核失败行和规则级别。',[r.trace_id||'no-trace'])}${traceActions(r.trace_id)}${renderTable((r.results||[]).map(x=>({rule:x.rule.name,dataset:x.dataset.name,status:x.status,checked_rows:x.checked_rows,failed_rows:x.failed_rows,severity:x.rule.severity})))}`; if(r.trace_id) openDataTrace(r.trace_id,'steps',null).catch(()=>{});}catch(e){document.getElementById('qualityResult').innerHTML=stateBanner('error','质量检查失败',e.message)}finally{setBusy(btn,false)}}
+async function importCsv(btn){if(!csvFile.files[0]){document.getElementById('importResult').innerHTML=stateBanner('warn','请选择 CSV 文件','上传前需要选择一个本地 .csv 文件。');return toast('请选择 CSV 文件')} setBusy(btn,true);document.getElementById('importResult').innerHTML=inlineLoading('正在上传并刷新数据目录');try{const fd=new FormData();fd.append('file',csvFile.files[0]); const url=`/api/data/import/csv?dataset_name=${encodeURIComponent(csvName.value)}&business_domain=${encodeURIComponent(csvDomain.value)}`; const r=await api(url,{method:'POST',body:fd,headers:{}});document.getElementById('importResult').innerHTML=`${stateBanner('success','CSV 已导入','数据目录已刷新，仍需遵守数据分级和权限策略。',[r.dataset_id||'dataset'])}<pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`; await refreshCatalog();}catch(e){document.getElementById('importResult').innerHTML=stateBanner('error','CSV 导入失败',e.message)}finally{setBusy(btn,false)}}
 
+function semanticTermCard(t){
+  const synonyms=asList(t.synonyms);
+  const binding=[t.canonical_object_type,t.canonical_object_id].filter(Boolean).join(' / ')||'未绑定标准对象';
+  return `<article class="semantic-card">
+    <div class="semantic-card-head"><div><span>${esc(t.business_domain||'Domain')}</span><b>${esc(t.term||t.id)}</b></div>${statusTag(t.status||'published')}</div>
+    <p>${esc(t.definition||'暂无定义')}</p>
+    <div class="semantic-meta">${tag(displayValue(t.term_type||'term'))}${tag(binding)}${compactTags(synonyms,4)}</div>
+  </article>`;
+}
+function queryTemplateCard(t){
+  const examples=asList(t.example_questions);
+  return `<article class="template-card">
+    <div class="template-head"><div><span>${esc(t.business_domain||'Domain')} · ${esc(displayValue(t.intent||'query'))}</span><b>${esc(t.name||t.id)}</b></div>${tag(t.chart_type||'table','green')}</div>
+    <p>${esc(t.template_text||'暂无模板问题')}</p>
+    <div class="template-examples">${examples.length?examples.slice(0,3).map(q=>`<button class="prompt-pill" onclick="showPage('chat');setTimeout(()=>askPreset('${jsArg(q)}'),40)">${esc(q)}</button>`).join(''):emptyState('暂无示例','该模板还没有配置示例问题。')}</div>
+    <details><summary>查看 SQL 模板</summary><pre class="code">${esc(t.sql_template||'未配置 SQL 模板')}</pre></details>
+  </article>`;
+}
+function coverageDebt(cov){
+  const missing=cov.missing_metric_terms||[];
+  return `<div class="coverage-debt">
+    <div class="section-title"><div><h2>覆盖缺口</h2><p>优先补齐指标术语与字段说明，减少业务问数歧义。</p></div>${missing.length?tag(`${missing.length} metrics`,'amber'):tag('closed','green')}</div>
+    <div class="debt-grid">
+      <div class="debt-card"><span>缺少术语的指标</span><b>${esc(missing.length)}</b><p>${missing.length?'建议绑定 semantic_terms':'当前指标均已绑定术语'}</p></div>
+      <div class="debt-card"><span>字段说明缺口</span><b>${esc(cov.field_desc_missing_count??0)}</b><p>${esc(cov.field_count??0)} 个字段纳入覆盖统计</p></div>
+    </div>
+    ${missing.length?renderTable(missing,{columns:['name','code','dataset_id','formula','status'],limit:20,compact:true}):stateBanner('success','语义覆盖完整','当前可见指标均已绑定业务术语。')}
+  </div>`;
+}
+function semanticDomainSummary(terms,templates){
+  const combined=[...(terms||[]),...(templates||[])];
+  const domains=topCounts(combined,'business_domain',6);
+  return `<div class="semantic-domain">
+    <div class="section-title"><div><h2>业务域分布</h2><p>术语与查询模板按业务域组织，方便复用。</p></div></div>
+    <div class="audit-bars">${domains.length?domains.map(([name,count])=>`<div class="audit-bar-row"><span>${esc(name)}</span><div><i style="width:${Math.max(8,Math.round(count/Math.max(1,combined.length)*100))}%"></i></div><b>${esc(count)}</b></div>`).join(''):emptyState('暂无业务域','没有可统计的语义资产。')}</div>
+  </div>`;
+}
 async function renderSemantic(){
   const [terms,templates,cov]=await Promise.all([api('/api/semantic/terms').catch(()=>[]),api('/api/semantic/query-templates').catch(()=>[]),api('/api/semantic/coverage').catch(()=>({}))]);
-  document.getElementById('page-semantic').innerHTML=`<h1>语义中心</h1><div class="grid4"><div class="card"><div class="muted">数据集</div><div class="metric">${cov.dataset_count??'-'}</div></div><div class="card"><div class="muted">指标</div><div class="metric">${cov.metric_count??'-'}</div></div><div class="card"><div class="muted">术语</div><div class="metric">${cov.term_count??'-'}</div></div><div class="card"><div class="muted">指标覆盖率</div><div class="metric">${Math.round((cov.metric_term_coverage||0)*100)}%</div></div></div><div class="grid2" style="margin-top:14px"><div class="card"><h3>业务术语</h3>${renderTable(terms)}</div><div class="card"><h3>查询模板</h3>${renderTable(templates)}</div></div>`;
+  const covPct=percent(cov.metric_term_coverage);
+  const missing=(cov.missing_metric_terms||[]).length;
+  document.getElementById('page-semantic').innerHTML=`${pageHeader('语义中心','治理指标、字段、术语和查询模板，让业务口径可复用、可解释、可审计。',['Metric glossary','Query templates','Coverage'])}
+  <div class="semantic-hero"><div><h2>指标覆盖率 ${covPct}%</h2><p>将技术字段、业务术语和指标口径绑定，减少问数歧义，并把可复用查询模板直接回流到智能问数。</p><div class="coverage-bar"><span style="width:${covPct}%"></span></div><div class="semantic-health">${missing?tag(`${missing} metrics missing`,'amber'):tag('metric terms complete','green')}${tag(`${cov.field_desc_missing_count??0} field gaps`,cov.field_desc_missing_count?'amber':'green')}</div></div><div class="metric-grid tight">${metricCard('数据集',cov.dataset_count??'-','已纳入语义覆盖')}${metricCard('指标',cov.metric_count??'-','可解释业务口径')}${metricCard('字段',cov.field_count??'-','字段说明与分类')}${metricCard('术语',cov.term_count??terms.length,'业务语言资产')}${metricCard('模板',templates.length,'可复用查询入口')}${metricCard('覆盖缺口',missing,'待补指标术语')}</div></div>
+  <div class="semantic-layout section-gap">
+    <section class="semantic-main">
+      <div class="section-title"><div><h2>业务术语资产</h2><p>展示定义、同义词和 canonical object 绑定，给业务用户和数据治理人员同一套口径。</p></div>${tag(`${terms.length} terms`)}</div>
+      <div class="semantic-grid">${terms.length?terms.map(semanticTermCard).join(''):emptyState('暂无术语','当前没有可展示的业务术语。')}</div>
+      <div class="section-title section-gap"><div><h2>查询模板库</h2><p>把常用问题、图表意图和 SQL 模板绑定，让智能问数有稳定入口。</p></div>${tag(`${templates.length} templates`)}</div>
+      <div class="template-grid">${templates.length?templates.map(queryTemplateCard).join(''):emptyState('暂无模板','当前没有可复用的查询模板。')}</div>
+    </section>
+    <aside class="semantic-side">
+      ${coverageDebt(cov)}
+      ${semanticDomainSummary(terms,templates)}
+      ${workflowRail([['术语沉淀','定义业务词、同义词和绑定对象'],['模板复用','把高频问题转为 SQL 模板'],['问数治理','通过 Trace 和审计验证语义命中']])}
+    </aside>
+  </div>
+  <div class="grid2 section-gap">
+    <section class="semantic-section"><div class="section-title"><div><h2>术语明细</h2><p>后端字段原样对齐 semantic_terms。</p></div></div>${renderTable(terms,{columns:['term','term_type','business_domain','definition','canonical_object_type','canonical_object_id','synonyms','status'],limit:80})}</section>
+    <section class="semantic-section"><div class="section-title"><div><h2>模板明细</h2><p>后端字段原样对齐 query_templates。</p></div></div>${renderTable(templates,{columns:['name','business_domain','intent','dataset_id','chart_type','template_text','example_questions','status'],limit:80})}</section>
+  </div>`;
+}
+
+function codexSummary(tasks){
+  return {
+    total:tasks.length,
+    waiting:tasks.filter(t=>t.status==='awaiting_approval').length,
+    ready:tasks.filter(t=>t.status==='ready').length,
+    dispatched:tasks.filter(t=>['dispatched','completed','failed'].includes(t.status)).length
+  };
+}
+function codexRuntimeHtml(diag,workspaces){
+  const cli=diag.cli||{}, sdk=diag.sdk||{}, http=diag.http||{};
+  return `<div class="codex-runtime-grid">
+    <div class="diagnostic-card"><span>CLI</span><b>${cli.enabled?'已启用':'未启用'}</b><p>${esc(cli.path||'未检测到 CLI')}</p>${cli.version?tag(cli.version,'green'):tag('missing','amber')}</div>
+    <div class="diagnostic-card"><span>SDK</span><b>${sdk.module_found?'已检测':'未检测'}</b><p>${esc(sdk.python_module||'Python module')}</p>${statusTag(sdk.module_found?'success':'pending')}</div>
+    <div class="diagnostic-card"><span>HTTP</span><b>${http.endpoint_configured?'已配置':'未配置'}</b><p>默认模式：${esc(diag.mode_default||'-')}</p>${statusTag(diag.mode_default||'mock')}</div>
+    <div class="diagnostic-card"><span>Workspaces</span><b>${esc(workspaces.length)}</b><p>${esc(workspaces[0]?.repo_path||'等待配置 workspace')}</p>${tag('allowed paths')}</div>
+  </div>`;
+}
+function codexStatusFlow(status){
+  const flow=['created','awaiting_approval','ready','dispatched'];
+  const labels={created:'创建',awaiting_approval:'待审批',ready:'可派发',dispatched:'已派发'};
+  const idx=status==='failed'||status==='completed'?flow.length-1:Math.max(0,flow.indexOf(status));
+  return `<div class="mini-flow codex-flow">${flow.map((s,i)=>`<span class="${i<=idx?'done':''}">${esc(labels[s])}</span>`).join('')}</div>`;
+}
+function codexTaskCard(t){
+  const criteria=Array.isArray(t.acceptance_criteria)?t.acceptance_criteria:[];
+  return `<button class="codex-task-card ${statusClass(t.status)}" onclick="selectCodexTask('${jsArg(t.id)}',this)">
+    <div class="codex-task-head"><span>${esc(t.mode||'mock')}</span>${statusTag(t.status||'draft')}</div>
+    <b>${esc(t.title||t.id)}</b>
+    <p>${esc(short(criteria[0]||t.result_summary||t.task_prompt||'等待任务说明',86))}</p>
+    <div class="codex-task-meta"><span>${esc(timeText(t.updated_at||t.created_at))}</span><span>${esc(t.risk_level||'medium')}</span></div>
+  </button>`;
+}
+function codexTaskQueueHtml(tasks){
+  const s=codexSummary(tasks);
+  const latest=tasks[0];
+  return `<div class="codex-queue-head"><div><h3>任务队列</h3><p>按更新时间排列，点击任务可查看 handoff、事件、产物和源 Trace。</p></div>${tag(`${tasks.length} tasks`)}</div>
+  <div class="codex-queue-metrics">${metricCard('待审批',s.waiting,'需要人工确认')}${metricCard('可派发',s.ready,'允许 dispatch')}${metricCard('已派发',s.dispatched,'含 completed / failed')}</div>
+  <div class="codex-task-list">${tasks.length?tasks.slice(0,18).map(codexTaskCard).join(''):emptyState('暂无 Codex 任务','从问数或本页创建任务后会出现在这里。')}</div>
+  ${latest?`<div class="muted section-gap">最近任务：${esc(latest.id)}</div>`:''}`;
+}
+function selectCodexTask(id,btn){
+  const input=document.getElementById('codexTaskId');
+  if(input) input.value=id;
+  document.querySelectorAll('.codex-task-card').forEach(x=>x.classList.toggle('active',x===btn));
+  loadCodexTask(null);
+}
+function codexEventContent(event){
+  const raw=event?.content;
+  const parsed=typeof raw==='string'?parseJsonMaybe(raw):raw;
+  if(parsed&&typeof parsed==='object') return JSON.stringify(parsed,null,2);
+  return String(raw||'');
+}
+function codexEventTimeline(events=[]){
+  return `<div class="codex-event-timeline">${events.length?events.map((e,i)=>`<div class="codex-event">
+    <span>${i+1}</span><div><b>${esc(displayValue(e.event_type||'event'))}</b><p>${esc(e.mode||'-')} · ${esc(timeText(e.created_at))}</p>${codexEventContent(e)?`<details><summary>事件内容</summary><pre class="code">${esc(codexEventContent(e))}</pre></details>`:''}</div>
+  </div>`).join(''):emptyState('暂无事件','创建、审批、派发或写入 handoff 后会生成事件。')}</div>`;
+}
+function codexArtifactCards(artifacts=[]){
+  return `<div class="codex-artifact-grid">${artifacts.length?artifacts.map(a=>`<article class="codex-artifact"><div>${tag(a.artifact_type||'artifact')}<span>${esc(timeText(a.created_at))}</span></div><b>${esc(a.path||a.id)}</b>${a.content?`<details><summary>内容预览</summary><pre class="code">${esc(short(a.content,2600))}</pre></details>`:''}</article>`).join(''):emptyState('暂无产物','handoff、CLI 输出或 SDK 输出会在这里归档。')}</div>`;
+}
+function codexTaskDetailHtml(task,handoff=''){
+  const criteria=Array.isArray(task.acceptance_criteria)?task.acceptance_criteria:[];
+  return `<div class="codex-detail-shell">
+    <section class="codex-detail-main">
+      ${stateBanner(task.status==='failed'?'error':task.status==='awaiting_approval'?'pending':'success','任务已加载',task.result_summary||'查看审批、派发、事件和产物。',[task.id,displayValue(task.status),task.mode||'mock'])}
+      <div class="codex-detail-title"><div><span>${esc(task.workspace?.name||task.workspace_id||'Workspace')}</span><h3>${esc(task.title||task.id)}</h3></div>${statusTag(task.risk_level||'medium')}</div>
+      ${codexStatusFlow(task.status)}
+      <div class="codex-criteria">${criteria.length?criteria.map(x=>tag(x)).join(''):tag('默认验收标准','amber')}</div>
+      ${task.trace_id?traceActions(task.trace_id,'openCodexTrace'):''}
+      <div class="grid2 section-gap">
+        <div><h4>Handoff</h4><pre class="code">${esc(handoff||task.task_prompt||'')}</pre></div>
+        <div><h4>派发结果</h4><pre class="code">${esc(JSON.stringify(task.result_json||{},null,2))}</pre></div>
+      </div>
+      <h4>事件链路</h4>${codexEventTimeline(task.events||[])}
+      <h4>产物</h4>${codexArtifactCards(task.artifacts||[])}
+    </section>
+    ${traceDrawer('codexTraceBox','Codex 源 Trace','如果任务来自问数或 Agent 嵌套派发，这里显示源问题、审批和派发步骤。')}
+  </div>`;
+}
+async function refreshCodexTaskQueue(){
+  const box=document.getElementById('codexTaskQueue');
+  if(!box) return;
+  const tasks=await api('/api/codex/tasks').catch(()=>[]);
+  box.innerHTML=codexTaskQueueHtml(tasks);
 }
 
 async function renderCodex(){
   const [diag,tasks,workspaces]=await Promise.all([api('/api/codex/diagnostics').catch(()=>({})),api('/api/codex/tasks').catch(()=>[]),api('/api/codex/workspaces').catch(()=>[])]);
-  document.getElementById('page-codex').innerHTML=`<h1>Codex 运行台</h1><div class="grid3"><div class="card"><h3>CLI</h3><p>enabled：${esc(diag.cli?.enabled)}<br/>path：${esc(diag.cli?.path||'未检测')}<br/>version：${esc(diag.cli?.version||'-')}</p></div><div class="card"><h3>SDK</h3><p>enabled：${esc(diag.sdk?.enabled)}<br/>module：${esc(diag.sdk?.python_module||'-')}<br/>found：${esc(diag.sdk?.module_found)}</p></div><div class="card"><h3>HTTP</h3><p>endpoint：${diag.http?.endpoint_configured?'已配置':'未配置'}<br/>default mode：${esc(diag.mode_default||'-')}</p></div></div><div class="split" style="margin-top:14px"><div class="card"><h3>创建 Codex 工程任务</h3><label>Workspace</label><select id="codexWs">${workspaces.map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select><label>标题</label><input id="codexTitle" value="完善 独立数据智能体平台界面和功能"/><label>任务</label><textarea id="codexPrompt">进一步优化前端交互、完善数据能力面板、保持 Trace、权限和 SQL Guard 不退化，并补充测试。</textarea><label>模式</label><select id="codexMode"><option value="mock">mock</option><option value="http">http</option><option value="cli">cli</option><option value="sdk">sdk</option></select><button onclick="createCodexTask()">创建任务</button><div id="codexResult"></div></div><div class="card"><h3>任务列表</h3>${renderTable(tasks.map(t=>({id:t.id,title:t.title,status:t.status,mode:t.mode,risk:t.risk_level,updated_at:t.updated_at})))}<div class="form-row" style="margin-top:10px"><input id="codexTaskId" placeholder="任务ID"/><select id="dispatchMode"><option value="mock">mock</option><option value="http">http</option><option value="cli">cli</option><option value="sdk">sdk</option></select></div><button onclick="approveCodexTask()">审批</button><button class="secondary" onclick="dispatchCodexTask()">派发</button><button class="ghost" onclick="loadCodexTask()">查看任务</button><div id="codexTaskDetail"></div></div></div>`;
+  document.getElementById('page-codex').innerHTML=`${pageHeader('Codex 运行台','创建、审批、派发和审计工程智能体任务；高风险任务必须保留人工审批。',['Human approval','CLI / SDK','Audit events'])}
+  <div class="codex-console section-gap">
+    <section class="codex-main">
+      ${codexRuntimeHtml(diag,workspaces)}
+      <div class="approval-banner"><b>审批边界</b><span>任何会改代码的 Codex 任务都需要人工审批后再派发，页面只展示任务、事件、Trace 和产物，不绕过后端 approval flow。</span></div>
+      <div class="card form-shell codex-create-card"><div class="section-title"><div><h2>创建工程任务</h2><p>像 ChatGPT 的 composer 一样输入目标，但把 workspace、验收标准、审批和派发模式结构化。</p></div>${tag('handoff first','amber')}</div><label class="field-label" for="codexWs">Workspace</label><select id="codexWs">${workspaces.map(w=>`<option value="${esc(w.id)}">${esc(w.name)}</option>`).join('')}</select><label class="field-label" for="codexTitle">标题</label><input id="codexTitle" value="完善独立数据智能体平台前端体验"/><label class="field-label" for="codexPrompt">任务</label><textarea id="codexPrompt">进一步优化前端交互、完善数据能力面板、保持 Trace、权限和 SQL Guard 不退化，并补充轻量静态验证。</textarea><div class="form-row"><div><label class="field-label" for="codexMode">模式</label><select id="codexMode"><option value="mock">mock</option><option value="http">http</option><option value="cli">cli</option><option value="sdk">sdk</option></select></div><button onclick="createCodexTask(this)">创建任务</button></div><div id="codexResult"></div></div>
+    </section>
+    <aside class="codex-side">
+      <div class="card"><div id="codexTaskQueue">${codexTaskQueueHtml(tasks)}</div></div>
+      <div class="card codex-dispatch-card"><h3>审批与派发</h3><div class="form-row"><input id="codexTaskId" placeholder="任务ID"/><select id="dispatchMode"><option value="mock">mock</option><option value="http">http</option><option value="cli">cli</option><option value="sdk">sdk</option></select></div><div class="toolbar"><button onclick="approveCodexTask(this)">审批</button><button class="secondary" onclick="dispatchCodexTask(this)">派发</button><button class="ghost" onclick="loadCodexTask(this)">查看任务</button></div></div>
+    </aside>
+  </div>
+  <div id="codexTaskDetail" class="section-gap">${emptyState('未选择任务','点击任务队列或输入任务 ID 后，会显示 handoff、事件、产物和源 Trace。')}</div>`;
 }
-async function createCodexTask(){try{const r=await api('/api/codex/tasks',{method:'POST',body:JSON.stringify({workspace_id:codexWs.value,title:codexTitle.value,task_prompt:codexPrompt.value,mode:codexMode.value,risk_level:'high',requires_approval:true,acceptance_criteria:['保持平台现有接口兼容','更新相关页面与测试','运行 smoke/security/full agent 测试']})});document.getElementById('codexResult').innerHTML=`<div class="message assistant">已创建：${esc(r.id)} / ${esc(r.status)}</div><pre class="code">${esc(r.task_prompt)}</pre>`;toast('Codex 任务已创建'); renderCodex();}catch(e){toast(e.message)}}
-async function approveCodexTask(){const id=codexTaskId.value.trim(); if(!id)return toast('请输入任务ID'); const r=await api(`/api/codex/tasks/${id}/approve`,{method:'POST',body:JSON.stringify({comment:'页面审批'})});toast('已审批');document.getElementById('codexTaskDetail').innerHTML=`<pre class="code">${esc(JSON.stringify(r,null,2))}</pre>`;}
-async function dispatchCodexTask(){const id=codexTaskId.value.trim(); if(!id)return toast('请输入任务ID'); const r=await api(`/api/codex/tasks/${id}/dispatch`,{method:'POST',body:JSON.stringify({mode:dispatchMode.value})});document.getElementById('codexTaskDetail').innerHTML=`<h3>派发结果</h3><pre class="code">${esc(JSON.stringify(r.result_json,null,2))}</pre><h3>事件</h3>${renderTable(r.events||[])}`;}
-async function loadCodexTask(){const id=codexTaskId.value.trim(); if(!id)return toast('请输入任务ID'); const r=await api('/api/codex/tasks/'+id); const h=await api(`/api/codex/tasks/${id}/handoff`).catch(()=>({handoff:''})); document.getElementById('codexTaskDetail').innerHTML=`<h3>${esc(r.title)}</h3><div>${tag(r.status)}${tag(r.mode)}${tag(r.risk_level,'amber')}</div><h3>Handoff</h3><pre class="code">${esc(h.handoff||r.task_prompt||'')}</pre><h3>事件</h3>${renderTable(r.events||[])}<h3>产物</h3>${renderTable(r.artifacts||[])}`;}
+async function createCodexTask(btn){setBusy(btn,true);document.getElementById('codexResult').innerHTML=inlineLoading('正在创建工程任务');try{const r=await api('/api/codex/tasks',{method:'POST',body:JSON.stringify({workspace_id:codexWs.value,title:codexTitle.value,task_prompt:codexPrompt.value,mode:codexMode.value,risk_level:'high',requires_approval:true,acceptance_criteria:['保持平台现有接口兼容','不回退 Trace、RBAC、SQL Guard 和审计能力','运行 python3 scripts/static_check.py']})});document.getElementById('codexResult').innerHTML=stateBanner('pending','Codex 任务已创建','高风险工程任务仍需人工审批后再派发。',[r.id,r.status]);const taskInput=document.getElementById('codexTaskId'); if(taskInput) taskInput.value=r.id||''; document.getElementById('codexTaskDetail').innerHTML=codexTaskDetailHtml(r,r.task_prompt); await refreshCodexTaskQueue(); toast('Codex 任务已创建');}catch(e){document.getElementById('codexResult').innerHTML=stateBanner('error','Codex 任务创建失败',e.message);toast(e.message)}finally{setBusy(btn,false)}}
+async function approveCodexTask(btn){const id=codexTaskId.value.trim(); if(!id)return toast('请输入任务ID'); setBusy(btn,true);document.getElementById('codexTaskDetail').innerHTML=inlineLoading('正在审批任务');try{const r=await api(`/api/codex/tasks/${id}/approve`,{method:'POST',body:JSON.stringify({comment:'页面审批'})});toast('已审批');document.getElementById('codexTaskDetail').innerHTML=codexTaskDetailHtml(r,r.task_prompt); await refreshCodexTaskQueue(); if(r.trace_id) openCodexTrace(r.trace_id,'steps',null).catch(()=>{});}catch(e){document.getElementById('codexTaskDetail').innerHTML=stateBanner('error','审批失败',e.message)}finally{setBusy(btn,false)}}
+async function dispatchCodexTask(btn){const id=codexTaskId.value.trim(); if(!id)return toast('请输入任务ID'); setBusy(btn,true);document.getElementById('codexTaskDetail').innerHTML=inlineLoading('正在派发任务');try{const r=await api(`/api/codex/tasks/${id}/dispatch`,{method:'POST',body:JSON.stringify({mode:dispatchMode.value})});document.getElementById('codexTaskDetail').innerHTML=codexTaskDetailHtml(r,r.task_prompt); await refreshCodexTaskQueue(); if(r.trace_id) openCodexTrace(r.trace_id,'steps',null).catch(()=>{});}catch(e){document.getElementById('codexTaskDetail').innerHTML=stateBanner('error','派发失败',e.message)}finally{setBusy(btn,false)}}
+async function loadCodexTask(btn){const id=codexTaskId.value.trim(); if(!id)return toast('请输入任务ID'); setBusy(btn,true);document.getElementById('codexTaskDetail').innerHTML=inlineLoading('正在读取任务详情');try{const r=await api('/api/codex/tasks/'+id); const h=await api(`/api/codex/tasks/${id}/handoff`).catch(()=>({handoff:''})); document.getElementById('codexTaskDetail').innerHTML=codexTaskDetailHtml(r,h.handoff||r.task_prompt||''); if(r.trace_id) openCodexTrace(r.trace_id,'summary',null).catch(()=>{});}catch(e){document.getElementById('codexTaskDetail').innerHTML=stateBanner('error','任务加载失败',e.message)}finally{setBusy(btn,false)}}
 
-async function renderReports(){const reports=await api('/api/reports').catch(()=>[]);document.getElementById('page-reports').innerHTML=`<h1>报告中心</h1><div class="card">${renderTable(reports)}<div class="muted">报告支持 draft / pending_review / approved / published 状态流。</div></div>`;}
-async function renderKnowledge(){const kbs=await api('/api/knowledge-bases').catch(()=>[]);document.getElementById('page-knowledge').innerHTML=`<h1>知识库</h1><div class="card"><p>平台管理知识库注册、绑定、版本与引用权限；真实知识内容可接 RAGFlow / Dify Knowledge。</p>${renderTable(kbs)}</div>`;}
-async function renderEvals(){const sets=await api('/api/eval-sets').catch(()=>[]);document.getElementById('page-evals').innerHTML=`<h1>评测中心</h1><div class="card"><h3>评测集</h3>${renderTable(sets)}<div class="form-row" style="margin-top:12px"><select id="evalSet">${sets.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><select id="evalAgent">${agentOptions()}</select></div><button onclick="runEval()">运行评测</button><div id="evalResult"></div></div>`;}
-async function runEval(){const run=await api('/api/eval-runs',{method:'POST',body:JSON.stringify({eval_set_id:evalSet.value,agent_id:evalAgent.value})});document.getElementById('evalResult').innerHTML=`<h3>评测结果</h3>${renderTable(run.results||[])}`;}
-async function renderAudit(){const logs=await api('/api/admin/audit-logs').catch(()=>[]);document.getElementById('page-audit').innerHTML=`<h1>审计日志</h1><div class="card">${renderTable(logs)}</div>`;}
+async function renderReports(){
+  const reports=await api('/api/reports').catch(()=>[]);
+  const statusCounts=countBy(reports,'status');
+  const latest=reports[0];
+  document.getElementById('page-reports').innerHTML=`${pageHeader('报告中心','管理 AI 生成报告的草稿、复核、批准和发布状态。',['Draft','Review','Publish'])}
+  <div class="metric-grid tight">${metricCard('报告资产',reports.length,'AI 生成和人工复核的报告')}${metricCard('待复核',statusCounts.pending_review||0,'需要人工确认')}${metricCard('已批准',statusCounts.approved||0,'可进入发布')}${metricCard('最近更新',latest?timeText(latest.updated_at||latest.created_at):'-','报告链路最新动作')}</div>
+  <div class="ops-layout section-gap">
+    <section class="ops-main"><div class="section-title"><div><h2>报告资产流</h2><p>以卡片扫读状态，以表格保留完整字段。</p></div>${tag(`${reports.length} reports`)}</div><div class="report-grid">${reports.length?reports.map(reportCard).join(''):emptyState('暂无报告','完成深度研究或报告生成后，这里会显示草稿、复核和发布状态。')}</div></section>
+    <aside class="workflow-card ops-side"><h3>报告状态流</h3>${workflowRail([['草稿生成','Agent 输出报告草稿并关联证据。'],['提交复核','业务 owner 或分析师发起 review。'],['管理员批准','人工确认口径、证据和风险。'],['发布分发','进入业务侧阅读和归档。']])}</aside>
+  </div>
+  <div id="reportDetail"></div>
+  <div class="card section-gap"><div class="card-heading"><h3>报告明细</h3>${tag('audit fields')}</div>${renderTable(reports,{columns:['id','title','status','report_type','owner_id','created_at','updated_at'],limit:80})}</div>`;
+}
+async function openReportDetail(id, btn){
+  const box=document.getElementById('reportDetail');
+  if(!box) return;
+  setBusy(btn,true);
+  box.innerHTML=inlineLoading('正在读取报告版本和证据');
+  try{
+    const report=await api('/api/reports/'+id);
+    box.innerHTML=reportDetailHtml(report);
+    box.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){
+    box.innerHTML=stateBanner('error','报告加载失败',e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+async function runReportAction(id, action, btn){
+  const endpoint={approve:'approve',publish:'publish','submit-review':'submit-review'}[action];
+  if(!endpoint) return;
+  setBusy(btn,true);
+  try{
+    await api(`/api/reports/${id}/${endpoint}`,{method:'POST'});
+    toast({approve:'报告已批准',publish:'报告已发布','submit-review':'已提交复核'}[action]||'报告状态已更新');
+    await renderReports();
+    await openReportDetail(id,null);
+  }catch(e){
+    toast('报告操作失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+async function renderKnowledge(){
+  const kbs=await api('/api/knowledge-bases').catch(()=>[]);
+  const versionLists=await Promise.all(kbs.map(k=>api(`/api/knowledge-bases/${k.id}/versions`).catch(()=>[])));
+  const backendCounts=countBy(kbs,'backend_type');
+  document.getElementById('page-knowledge').innerHTML=`${pageHeader('知识库','注册知识库、绑定 Agent、管理版本与引用权限，可对接 RAGFlow / Dify Knowledge。',['Knowledge binding','Versioning','Permissions'])}
+  <div class="metric-grid tight">${metricCard('知识库',kbs.length,'已注册外部知识源')}${metricCard('后端类型',Object.keys(backendCounts).length,'RAGFlow、Dify 或 mock')}${metricCard('活跃版本',versionLists.flat().filter(v=>v.status==='active').length,'可被 Agent 引用')}${metricCard('Adapter',new Set(kbs.map(k=>k.adapter_id).filter(Boolean)).size,'外部连接点')}</div>
+  <div class="knowledge-layout section-gap">
+    <section class="ops-main"><div class="section-title"><div><h2>知识资产</h2><p>关注知识源、后端、版本和绑定入口，不在平台内复制真实知识内容。</p></div>${tag(`${kbs.length} bases`)}</div><div class="knowledge-grid">${kbs.length?kbs.map((k,i)=>knowledgeCard(k,versionLists[i]||[])).join(''):emptyState('暂无知识库','注册知识库后，Agent 可通过绑定关系引用外部知识。')}</div></section>
+    <aside class="workflow-card ops-side"><h3>接入策略</h3>${workflowRail([['注册','记录知识库、后端类型和 Adapter。'],['版本','维护可回溯版本与 checksum。'],['绑定','按 Agent 能力域授权引用。'],['审计','保留创建、版本和引用动作。']])}</aside>
+  </div>
+  <div class="card section-gap"><div class="card-heading"><h3>知识库明细</h3>${tag('registry')}</div>${renderTable(kbs,{columns:['id','name','type','backend_type','adapter_id','description','status'],limit:80})}</div>`;
+}
+async function renderEvals(){
+  const sets=await api('/api/eval-sets').catch(()=>[]);
+  const caseLists=await Promise.all(sets.map(s=>api(`/api/eval-sets/${s.id}/cases`).catch(()=>[])));
+  const totalCases=caseLists.flat().length;
+  document.getElementById('page-evals').innerHTML=`${pageHeader('评测中心','用评测集对 Agent 回答质量、路由、SQL Guard 和回归结果做持续检查。',['Eval sets','Regression','Quality gate'])}
+  <div class="metric-grid tight">${metricCard('评测集',sets.length,'覆盖业务问数和多 Agent 能力')}${metricCard('用例',totalCases,'问题、期望 SQL 和标签')}${metricCard('可测 Agent',agents.length,'当前权限范围内')}${metricCard('默认门槛','0.80','建议作为回归判定线')}</div>
+  <div class="eval-layout section-gap">
+    <section class="ops-main"><div class="section-title"><div><h2>评测资产</h2><p>先看覆盖范围，再选择评测集与 Agent 运行回归。</p></div>${tag(`${totalCases} cases`)}</div><div class="eval-grid">${sets.length?sets.map((s,i)=>evalSetCard(s,caseLists[i]||[])).join(''):emptyState('暂无评测集','创建评测集后可用于问数、路由和 SQL Guard 回归。')}</div></section>
+    <div class="card form-shell eval-runner"><h3>运行评测</h3><p class="muted">选择评测集和 Agent，生成结果明细；运行会写入 Trace 与审计。</p><label class="field-label" for="evalSet">评测集</label><select id="evalSet">${sets.map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}</select><label class="field-label" for="evalAgent">Agent</label><select id="evalAgent">${agentOptions()}</select><button onclick="runEval(this)">运行评测</button><div id="evalResult"></div></div>
+  </div>`;
+}
+async function runEval(btn){setBusy(btn,true);document.getElementById('evalResult').innerHTML=inlineLoading('正在运行评测集');try{const run=await api('/api/eval-runs',{method:'POST',body:JSON.stringify({eval_set_id:evalSet.value,agent_id:evalAgent.value})});document.getElementById('evalResult').innerHTML=evalRunHtml(run);}catch(e){document.getElementById('evalResult').innerHTML=stateBanner('error','评测运行失败',e.message)}finally{setBusy(btn,false)}}
+async function renderAudit(){
+  const logs=await api('/api/admin/audit-logs').catch(()=>[]);
+  const topActions=topCounts(logs,'action',6);
+  const objectCounts=topCounts(logs,'object_type',5);
+  const recent=logs.slice(0,8);
+  document.getElementById('page-audit').innerHTML=`${pageHeader('审计日志','集中查看登录、问数、审批、派发和数据访问等关键动作。',['Audit','Trace','RBAC'])}
+  <div class="metric-grid tight">${metricCard('审计事件',logs.length,'最近 300 条以内')}${metricCard('动作类型',topActions.length,'登录、查询、审批、派发等')}${metricCard('对象类型',objectCounts.length,'被操作资源范围')}${metricCard('Request ID',logs.filter(l=>l.request_id).length,'可回溯请求链路')}</div>
+  <div class="audit-layout section-gap">
+    <section class="audit-console"><div class="section-title"><div><h2>动作密度</h2><p>快速定位高频操作和关键资源类型，再下钻到原始日志。</p></div>${tag('live audit','green')}</div><div class="audit-bars">${topActions.map(([name,count])=>`<div class="audit-bar-row"><span>${esc(displayValue(name))}</span><div><i style="width:${Math.max(8,Math.round(count/Math.max(1,topActions[0]?.[1]||1)*100))}%"></i></div><b>${count}</b></div>`).join('')||emptyState('暂无审计动作','产生登录、问数或审批后会显示动作密度。')}</div><div class="audit-objects">${objectCounts.map(([name,count])=>tag(`${displayValue(name)} ${count}`)).join('')}</div></section>
+    <aside class="audit-timeline"><div class="section-title"><div><h2>最近事件</h2><p>按时间倒序展示关键操作。</p></div></div>${recent.length?recent.map(auditTimelineItem).join(''):emptyState('暂无事件','当前没有可展示审计日志。')}</aside>
+  </div>
+  <div class="card section-gap"><div class="card-heading"><h3>原始审计日志</h3>${tag(`${logs.length} logs`)}</div>${renderTable(logs,{columns:['created_at','user_id','action','object_type','object_id','request_id','ip'],limit:120})}</div>`;
+}
 
 autoLogin();
