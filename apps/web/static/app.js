@@ -10,6 +10,7 @@ let currentTrace = null;
 let lastAnalysisTaskId = '';
 let lastSidebarTrigger = null;
 let chatSending = false;
+let chatAbortController = null;
 let chatSessions = [];
 let chatSessionFilter = {status:'active', q:''};
 let answerDraftCache = {};
@@ -1315,6 +1316,10 @@ document.addEventListener('keydown',e=>{
     renderCommandMenu();
     return;
   }
+  if(e.key==='Escape' && chatSending){
+    stopChatGeneration();
+    return;
+  }
   if(e.key==='Escape') toggleSidebar(false);
   const app=document.getElementById('app');
   if(e.key!=='Tab' || !app?.classList.contains('sidebar-open') || !window.matchMedia('(max-width: 760px)').matches) return;
@@ -1531,7 +1536,7 @@ function renderChat(){
           <button type="button" onclick="runChatQuickTool('codex')"><b>创建 Codex 任务</b><span>工程闭环</span></button>
         </div>
         <div class="prompt-list compact">${prompts.map(promptButton).join('')}</div>
-        <div class="composer-row"><textarea id="chatInput" rows="2" placeholder="询问数据、要求生成图表、解释指标，或创建工程任务" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button onclick="sendChat(this)" aria-label="发送消息">发送</button></div>
+        <div class="composer-row"><textarea id="chatInput" rows="2" placeholder="询问数据、要求生成图表、解释指标，或创建工程任务" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button id="chatSendButton" onclick="sendChat(this)" aria-label="发送消息">发送</button><button id="chatStopButton" class="stop-chat hidden" onclick="stopChatGeneration(this)" aria-label="停止生成">停止</button></div>
         <div class="composer-meta"><span>Enter 发送，Shift+Enter 换行</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
       </div>
     </section>
@@ -2537,20 +2542,46 @@ async function openReportTrace(traceId,target='summary',btn){
 async function openAuditTrace(traceId,target='summary',btn){
   return openTraceInto('auditTraceBox',traceId,target,btn,'审计 Trace');
 }
+function syncChatSendControls(sending=false){
+  const input=document.getElementById('chatInput');
+  const send=document.getElementById('chatSendButton');
+  const stop=document.getElementById('chatStopButton');
+  if(input) input.disabled=sending;
+  if(send){
+    send.disabled=sending;
+    send.classList.toggle('is-busy',sending);
+  }
+  if(stop){
+    stop.classList.toggle('hidden',!sending);
+    stop.disabled=!sending;
+    stop.classList.remove('is-busy');
+  }
+}
+function stopChatGeneration(btn){
+  if(!chatSending || !chatAbortController) return;
+  if(btn){
+    btn.disabled=true;
+    btn.classList.add('is-busy');
+  }
+  chatAbortController.abort();
+  toast('已停止本轮生成');
+}
 async function sendChat(btn){
-  if(chatSending) return;
+  if(chatSending){ stopChatGeneration(); return; }
   const input=document.getElementById('chatInput'); const msg=input.value.trim(); if(!msg) return; const agent_id=document.getElementById('chatAgent').value;
   chatSending=true;
-  const sendButton=btn||document.querySelector('#page-chat .composer-row button');
-  setBusy(sendButton,true);
-  input.disabled=true;
+  chatAbortController=new AbortController();
+  const sendButton=document.getElementById('chatSendButton')||document.querySelector('#page-chat .composer-row button');
+  const actionButton=btn&&btn!==sendButton?btn:null;
+  setBusy(actionButton,true);
+  syncChatSendControls(true);
   const box=document.getElementById('chatMessages');
   if(box.querySelector('.chat-welcome')) box.innerHTML='';
   box.innerHTML+=userMessageHtml(msg); input.value='';
   const pendingId='pending-'+Date.now();
   box.innerHTML+=`<div id="${pendingId}" class="message assistant pending-message">${inlineLoading('Agent 正在路由和生成答案')}</div>`;
   try{
-    const data=await api('/api/chat/query',{method:'POST',body:JSON.stringify({message:msg,agent_id,session_id:activeSessionId||null,context:selectedChatContext()})}); const r=data.result||{};
+    const data=await api('/api/chat/query',{method:'POST',signal:chatAbortController.signal,body:JSON.stringify({message:msg,agent_id,session_id:activeSessionId||null,context:selectedChatContext()})}); const r=data.result||{};
     activeSessionId=data.session_id||activeSessionId;
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=sessionTitle({title:msg});
     document.getElementById(pendingId)?.remove();
@@ -2558,8 +2589,21 @@ async function sendChat(btn){
     await openTrace(data.trace_id);
     if(!chatCanvasValue().trim()) setChatCanvasDraft(chatCanvasTemplate('report'),'已根据本轮回答生成报告要点');
     await refreshChatSessions();
-  }catch(e){const p=document.getElementById(pendingId); if(p) p.innerHTML=stateBanner('error','问数失败',e.message); else box.innerHTML+=`<div class="message assistant">${stateBanner('error','问数失败',e.message)}</div>`}
-  finally{chatSending=false; input.disabled=false; setBusy(sendButton,false)}
+  }catch(e){
+    const stopped=e?.name==='AbortError';
+    const banner=stopped
+      ? stateBanner('warn','已停止生成','本轮请求已在浏览器侧停止；原问题保留在当前会话，可编辑、重问或分支。')
+      : stateBanner('error','问数失败',e.message);
+    const p=document.getElementById(pendingId);
+    if(p) p.innerHTML=banner;
+    else box.innerHTML+=`<div class="message assistant">${banner}</div>`;
+  }
+  finally{
+    chatSending=false;
+    chatAbortController=null;
+    syncChatSendControls(false);
+    setBusy(actionButton,false);
+  }
   box.scrollTop=box.scrollHeight;
 }
 async function loadTrace(traceId){
