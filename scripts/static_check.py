@@ -180,7 +180,7 @@ def check_hfs_contract() -> None:
         raise SystemExit("Pattern A repo must keep Space root at repo root, not cloud/hfs/")
 
     smoke = ROOT / "scripts" / "hf_space_smoke.sh"
-    for expected_item in ("/_ops/healthz", "/api/health/live", "Authorization: Bearer", "X-Ops-Token", "X-DAP-Token", "SMOKE_USERNAME", "SMOKE_PASSWORD", "ops cookie migration"):
+    for expected_item in ("/_ops/healthz", "/_ops/persistence", "/_ops/errors", "/_ops/metrics", "/api/health/live", "Authorization: Bearer", "X-Ops-Token", "X-DAP-Token", "SMOKE_USERNAME", "SMOKE_PASSWORD", "ops cookie migration"):
         check_file_contains(smoke, expected_item)
     check_file_contains(smoke, "frame-ancestors")
     check_file_absent(smoke, "$(request_headers)")

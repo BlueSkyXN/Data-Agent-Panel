@@ -49,6 +49,9 @@
         <button data-page="knowledge" onclick="showPage('knowledge')">知识库</button>
         <button data-page="evals" onclick="showPage('evals')">评测中心</button>
         <button data-page="audit" onclick="showPage('audit')">审计日志</button>
+        <span class="nav-section">控制面</span>
+        <button data-page="ops" onclick="showPage('ops')">Ops 控制面</button>
+        <button data-page="admin" onclick="showPage('admin')">Admin 控制面</button>
       </nav>
       <div class="user-box"><span id="currentUser"></span><button class="ghost-dark" onclick="logout()">退出</button></div>
     </aside>
@@ -84,6 +87,8 @@
       <section id="page-knowledge" class="page hidden"></section>
       <section id="page-evals" class="page hidden"></section>
       <section id="page-audit" class="page hidden"></section>
+      <section id="page-ops" class="page hidden"></section>
+      <section id="page-admin" class="page hidden"></section>
     </main>
   </div>
 

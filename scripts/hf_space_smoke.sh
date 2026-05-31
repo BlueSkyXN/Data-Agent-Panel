@@ -104,6 +104,9 @@ curl_retry "$BASE_URL/nginx-health"
 curl_retry "$BASE_URL/_ops/healthz"
 curl_retry "$BASE_URL/_ops/health"
 curl_retry "$BASE_URL/_ops/system"
+curl_retry "$BASE_URL/_ops/persistence"
+curl_retry "$BASE_URL/_ops/errors"
+curl_retry "$BASE_URL/_ops/metrics"
 check_frame_headers
 check_ops_cookie_migration
 

@@ -132,6 +132,28 @@ GET /api/admin/stats
 GET /api/admin/config
 ```
 
+管理控制面入口：
+
+```http
+GET /_admin/
+```
+
+## 运维诊断
+
+`/_ops/*` 使用 `DAP_OPS_TOKEN` 保护，支持 `X-Ops-Token`、`Authorization: Bearer <token>`、临时 query token 和 cookie-backed dashboard。该面只读，不提供重启、写配置、执行 SQL 或文件写入能力。
+
+```http
+GET /_ops/
+GET /_ops/healthz
+GET /_ops/health
+GET /_ops/system
+GET /_ops/config
+GET /_ops/persistence
+GET /_ops/errors
+GET /_ops/metrics
+GET /_ops/version
+```
+
 ## V0.3 新增接口
 
 ### 数据能力

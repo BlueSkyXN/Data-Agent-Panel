@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -97,4 +97,14 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/", include_in_schema=False)
 def index():
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.get("/_admin", include_in_schema=False)
+def admin_index_redirect():
+    return RedirectResponse(url="/_admin/", status_code=308)
+
+
+@app.get("/_admin/", include_in_schema=False)
+def admin_index():
     return FileResponse(STATIC_DIR / "index.html")

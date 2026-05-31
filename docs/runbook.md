@@ -15,6 +15,19 @@ curl http://localhost:8000/api/health/live
 curl http://localhost:8000/api/health/ready
 ```
 
+## HFS Ops / Admin 控制面
+
+`/_ops/` 是 HFS 只读诊断面。设置 `DAP_OPS_TOKEN` 后，用 `X-Ops-Token` 访问：
+
+```bash
+curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/healthz
+curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/persistence
+curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/errors
+curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/metrics
+```
+
+`/_admin/` 复用平台登录态和 RBAC，只做管理驾驶舱入口；用户、角色、配置、统计和审计仍由 `/api/admin/*` 的 `require_admin` 保护。
+
 ## 常见问题
 
 ### 登录失败

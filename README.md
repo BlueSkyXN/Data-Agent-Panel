@@ -102,6 +102,8 @@ docker compose up --build
 - 默认端口为 `7860`。
 - `hfs-dev.toml` 声明本仓库为 HFS Pattern A / self-contained / repo-root。
 - Canonical 只读诊断入口为 `/_ops/healthz`，兼容 `/_ops/health`、`/healthz` 和 `/nginx-health`。
+- `/_ops/` 是 HFS 只读控制面，聚合 health、system、config、persistence、errors 和 metrics，不承载写操作。
+- `/_admin/` 是平台 Admin 控制面入口，复用应用登录和 RBAC；只有 `admin` 角色可读取 `/api/admin/*`。
 
 推荐 Space Variables：
 
@@ -122,6 +124,8 @@ DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
 `DAP_OPS_TOKEN` 未配置时，`/_ops/*` 诊断入口会在 Hugging Face / production 模式下锁定。Docker/HF 启动脚本会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但正式部署仍建议显式设置并保存在 Space Secrets 中。
+
+浏览器临时进入 ops 面时，可使用 `/_ops/?token=<DAP_OPS_TOKEN>` 换取 HttpOnly cookie，页面会跳回无 query 的 `/_ops/`，不会把完整 token 写入 HTML。CLI 和自动化优先使用 `X-Ops-Token`。
 
 如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；正式环境需要先通过受控流程预置管理员账号。
 

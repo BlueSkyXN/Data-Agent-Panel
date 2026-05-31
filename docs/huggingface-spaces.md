@@ -23,7 +23,8 @@ FastAPI Web/API/Agent Gateway
 | 数据目录 | `hf_entrypoint.sh` 自动选择 `/persist`、`/data` 或 `/tmp` |
 | 初始化 | 容器启动时执行 `db.init_all(reset=False)`，幂等创建 SQLite DB 和样例数据 |
 | iframe | HF 模式不设置 `X-Frame-Options=SAMEORIGIN`，改用 CSP `frame-ancestors` 允许 Hugging Face 父页面 |
-| 运维 | 提供 `/healthz`、`/nginx-health`、`/_ops/healthz`、`/_ops/health`、`/_ops/system`、`/_ops/config` |
+| 运维 | 提供 `/healthz`、`/nginx-health`、`/_ops/healthz`、`/_ops/health`、`/_ops/system`、`/_ops/config`、`/_ops/persistence`、`/_ops/errors`、`/_ops/metrics` |
+| 控制面 | `/_ops/` 是只读 HFS Ops 控制面；`/_admin/` 复用平台登录和 RBAC，作为 Admin 控制面入口 |
 | Compose | HF 不用 compose；保留 `docker-compose.hf-local.yml` 仅做本地模拟 |
 
 ## 3. 文件变化
@@ -38,6 +39,7 @@ scripts/hf_space_smoke.sh     # 远程验收脚本
 docs/huggingface-spaces.md    # 适配设计说明
 apps/api/routers/hf_space.py  # HF ops 诊断 API
 apps/api/middleware.py        # HF iframe 安全头适配
+apps/web/static/*             # 平台内 Ops / Admin 控制面
 ```
 
 ## 4. 持久化策略
@@ -58,6 +60,8 @@ HF Space 适配包仍然是演示 / POC / 内测部署形态：
 
 - 公共 Space 必须设置 `DAP_SECRET_KEY` 和 `DAP_OPS_TOKEN`。
 - `DAP_OPS_TOKEN` 未设置时，`/_ops/*` 会在 HF / production 模式下锁定。
+- `/_ops/*` 保持只读，不执行重启、写配置、SQL 写入、任意命令或任意文件读取。
+- `/_admin/` 由平台登录和 `admin` 角色保护，不复用 `DAP_OPS_TOKEN` 做管理授权。
 - `DAP_SECRET_KEY` 未设置时，Docker entrypoint 会在持久化数据目录生成随机值；正式部署仍建议放入 Space Secrets。
 - 建议 Visibility 使用 Private 或 Protected。
 - 不建议把真实生产数据放进 Space。
