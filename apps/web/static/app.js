@@ -13,6 +13,7 @@ let chatSending = false;
 let chatAbortController = null;
 let chatSessions = [];
 let chatSessionFilter = {status:'active', q:''};
+let sessionSearchCache = {};
 let answerDraftCache = {};
 let activeSessionId = '';
 let activeChatMessages = [];
@@ -139,6 +140,7 @@ function topCounts(rows,key,limit=5){
   return Object.entries(countBy(rows,key)).sort((a,b)=>b[1]-a[1]).slice(0,limit);
 }
 function timeText(v){return v?String(v).replace('T',' ').replace('Z',' UTC'):'-'}
+function compactText(v){return String(v??'').replace(/\s+/g,' ').trim()}
 function compactTags(values,limit=4){
   const list=[...new Set((values||[]).filter(Boolean))].slice(0,limit);
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
@@ -1644,7 +1646,7 @@ function renderChat(){
       <button class="new-chat" onclick="startNewChat()">新建对话</button>
       <div class="session-controls">
         <div class="rail-title">会话库</div>
-        <input id="sessionSearch" placeholder="搜索会话" value="${esc(chatSessionFilter.q)}" oninput="chatSessionFilter.q=this.value;renderSessionList()" aria-label="搜索会话"/>
+        <input id="sessionSearch" placeholder="搜索会话标题或消息内容" value="${esc(chatSessionFilter.q)}" oninput="chatSessionFilter.q=this.value;renderSessionList()" aria-label="搜索会话标题或消息内容"/>
         <div class="session-filter" role="tablist" aria-label="会话状态">
           <button data-status="active" class="${chatSessionFilter.status==='active'?'active':''}" onclick="setSessionFilter('active',this)">活跃</button>
           <button data-status="project" class="${chatSessionFilter.status==='project'?'active':''}" onclick="setSessionFilter('project',this)">项目</button>
@@ -2532,6 +2534,103 @@ function selectedChatContext(){
   if(contextPackHasContent()) base.context_pack=contextPackPayload();
   return base;
 }
+function sessionFilterQuery(){
+  return compactText(chatSessionFilter.q).toLowerCase();
+}
+function sessionStatusMatches(s,status=chatSessionFilter.status||'active'){
+  const pack=normalizeContextPack(contextPack);
+  return status==='all'
+    || (status==='project' ? pack.sessionIds.includes(s.id) : (s.status||'active')===status);
+}
+function searchValueText(value,depth=0){
+  if(value===null||value===undefined||depth>3) return '';
+  if(['string','number','boolean'].includes(typeof value)) return String(value);
+  if(Array.isArray(value)) return value.slice(0,20).map(v=>searchValueText(v,depth+1)).filter(Boolean).join(' ');
+  if(typeof value==='object'){
+    return Object.entries(value).slice(0,24).map(([k,v])=>{
+      const text=searchValueText(v,depth+1);
+      return text?`${k}: ${text}`:'';
+    }).filter(Boolean).join(' ');
+  }
+  return '';
+}
+function messageSearchText(message={}){
+  const raw=String(message.content||'');
+  if(!raw) return '';
+  try{
+    const parsed=JSON.parse(raw);
+    if(parsed&&typeof parsed==='object'){
+      return compactText([
+        parsed.answer,
+        parsed.report_markdown,
+        searchValueText(parsed.sql),
+        searchValueText(parsed.tables),
+        searchValueText(parsed.charts),
+        searchValueText(parsed.evidence),
+        searchValueText(parsed.warnings),
+        searchValueText(parsed.next_actions),
+        parsed.summary,
+        ...(Array.isArray(parsed.follow_up_questions)?parsed.follow_up_questions:[])
+      ].filter(Boolean).join(' '));
+    }
+  }catch(e){}
+  return compactText(raw);
+}
+function buildSessionSearchIndex(session={}){
+  const turns=asList(session.messages).map(m=>{
+    const role=m.role==='user'?'用户':(m.role==='assistant'?'助手':displayValue(m.role||'消息'));
+    const text=messageSearchText(m);
+    return text?`${role}：${text}`:'';
+  }).filter(Boolean);
+  const raw=turns.join(' · ');
+  return {status:'loaded', raw, text:raw.toLowerCase(), loadedAt:Date.now()};
+}
+function ensureSessionSearchIndex(q,sessions=[]){
+  if(!q||q.length<2) return;
+  sessions.slice(0,80).forEach(s=>{
+    if(!s?.id || sessionSearchCache[s.id]) return;
+    sessionSearchCache[s.id]={status:'pending', raw:'', text:''};
+    api('/api/sessions/'+encodeURIComponent(s.id)).then(session=>{
+      sessionSearchCache[s.id]=buildSessionSearchIndex(session);
+    }).catch(e=>{
+      sessionSearchCache[s.id]={status:'error', raw:'', text:'', error:e.message};
+    }).finally(()=>{
+      if(sessionFilterQuery()===q) renderSessionList();
+    });
+  });
+}
+function sessionSearchHaystack(s){
+  const cached=sessionSearchCache[s.id];
+  return [s.title,s.id,s.agent_id,s.status,cached?.text].filter(Boolean).join(' ').toLowerCase();
+}
+function searchSnippet(text,q,limit=92){
+  const clean=compactText(text);
+  const needle=String(q||'').trim().toLowerCase();
+  if(!clean||!needle) return '';
+  const idx=clean.toLowerCase().indexOf(needle);
+  if(idx<0) return '';
+  const start=Math.max(0,idx-28);
+  const end=Math.min(clean.length,idx+needle.length+limit-28);
+  return `${start>0?'…':''}${clean.slice(start,end)}${end<clean.length?'…':''}`;
+}
+function highlightSnippet(text,q){
+  const needle=String(q||'').trim();
+  const lower=String(text||'').toLowerCase();
+  const idx=needle?lower.indexOf(needle.toLowerCase()):-1;
+  if(idx<0) return esc(text);
+  return `${esc(text.slice(0,idx))}<mark>${esc(text.slice(idx,idx+needle.length))}</mark>${esc(text.slice(idx+needle.length))}`;
+}
+function sessionSearchSnippet(s,q){
+  return searchSnippet(sessionSearchCache[s.id]?.raw||'',q);
+}
+function sessionSearchMeta(q,statusSessions=[]){
+  if(!q) return '';
+  if(q.length<2) return `<div class="session-search-meta">继续输入以搜索历史消息内容。</div>`;
+  const target=statusSessions.slice(0,80);
+  const loaded=target.filter(s=>sessionSearchCache[s.id]?.status==='loaded').length;
+  const pending=target.filter(s=>sessionSearchCache[s.id]?.status==='pending').length;
+  return `<div class="session-search-meta">${pending?inlineLoading('正在搜索历史消息'):''}<span>${loaded}/${target.length} 个会话内容已索引</span></div>`;
+}
 function setSessionFilter(status,btn){
   chatSessionFilter.status=status;
   document.querySelectorAll('.session-filter button').forEach(b=>b.classList.toggle('active',b===btn||b.dataset.status===status));
@@ -2539,18 +2638,17 @@ function setSessionFilter(status,btn){
 }
 function sessionMatches(s){
   const status=chatSessionFilter.status||'active';
-  const q=(chatSessionFilter.q||'').trim().toLowerCase();
-  const pack=normalizeContextPack(contextPack);
-  const okStatus=status==='all'
-    || (status==='project' ? pack.sessionIds.includes(s.id) : (s.status||'active')===status);
-  const haystack=[s.title,s.id,s.agent_id,s.status,pack.sessionIds.includes(s.id)?'project context pack':''].filter(Boolean).join(' ').toLowerCase();
-  return okStatus && (!q || haystack.includes(q));
+  const q=sessionFilterQuery();
+  return sessionStatusMatches(s,status) && (!q || sessionSearchHaystack(s).includes(q));
 }
 function sessionCard(s){
   const archived=(s.status||'active')==='archived';
   const linked=normalizeContextPack(contextPack).sessionIds.includes(s.id);
-  return `<article class="session-item ${s.id===activeSessionId?'active':''} ${archived?'archived':''} ${linked?'linked':''}">
+  const q=sessionFilterQuery();
+  const snippet=sessionSearchSnippet(s,q);
+  return `<article class="session-item ${s.id===activeSessionId?'active':''} ${archived?'archived':''} ${linked?'linked':''} ${snippet?'search-hit':''}">
     <button class="session-open" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))} · ${esc(s.agent_id||'auto')}${linked?' · 工作包':''}</span></button>
+    ${snippet?`<p class="session-snippet">命中：${highlightSnippet(snippet,q)}</p>`:''}
     <div class="session-actions">
       <button title="重命名会话" onclick="renameChatSession('${jsArg(s.id)}',this)">改名</button>
       <button title="${linked?'已加入工作包':'加入当前工作包'}" onclick="bindSessionToContextPack('${jsArg(s.id)}',this)" ${linked?'disabled':''}>${linked?'已加入':'加入'}</button>
@@ -2561,11 +2659,15 @@ function sessionCard(s){
 function renderSessionList(){
   const box=document.getElementById('chatSessionList');
   if(!box) return;
+  const q=sessionFilterQuery();
+  const status=chatSessionFilter.status||'active';
+  const statusSessions=chatSessions.filter(s=>sessionStatusMatches(s,status));
+  ensureSessionSearchIndex(q,statusSessions);
   const filtered=chatSessions.filter(sessionMatches);
   const empty=chatSessionFilter.status==='project'
     ? emptyState('暂无项目会话','在任一会话卡片点击“加入”，或加载含来源会话的工作包预设。')
     : emptyState('暂无匹配会话','调整搜索或切换活跃/归档状态。');
-  box.innerHTML=filtered.length?filtered.slice(0,40).map(sessionCard).join(''):empty;
+  box.innerHTML=`${sessionSearchMeta(q,statusSessions)}${filtered.length?filtered.slice(0,40).map(sessionCard).join(''):empty}`;
 }
 async function refreshChatSessions(){
   chatSessions=await api('/api/sessions').catch(()=>[]);
@@ -2653,6 +2755,7 @@ async function loadChatSession(id){
   if(box) box.innerHTML=inlineLoading('正在加载会话');
   try{
     const session=await api('/api/sessions/'+id);
+    sessionSearchCache[session.id]=buildSessionSearchIndex(session);
     activeSessionId=session.id;
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=session.title||session.id;
     const agentSelect=document.getElementById('chatAgent'); if(agentSelect&&session.agent_id) agentSelect.value=session.agent_id;
@@ -2907,6 +3010,7 @@ async function sendChat(btn){
     document.getElementById(pendingId)?.remove();
     box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id,question:msg})}</div>`;
     activeChatMessages.push({role:'assistant',content:JSON.stringify(r),content_type:'agent_result',created_at:new Date().toISOString()});
+    if(activeSessionId) sessionSearchCache[activeSessionId]=buildSessionSearchIndex({messages:activeChatMessages});
     syncChatBriefControls();
     await openTrace(data.trace_id);
     if(!chatCanvasValue().trim()) setChatCanvasDraft(chatCanvasTemplate('report'),'已根据本轮回答生成报告要点');
