@@ -700,12 +700,20 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .composer-tools span{font-size:11px;color:#7d786d;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .prompt-list.compact{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:10px}
 .prompt-list.compact .prompt-pill{min-height:34px;padding:8px 10px;font-size:12px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.composer-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:20px;padding:8px}
+.composer-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:20px;padding:8px;position:relative}
 .composer-row textarea{border:0;min-height:48px;max-height:140px;padding:8px 10px;background:transparent;resize:vertical}
 .composer-row textarea:focus-visible{outline:0}
 .composer-row button{border-radius:999px;min-width:72px;min-height:40px}
 .composer-row .stop-chat{background:#eceae3;color:#171717;border:1px solid var(--line);box-shadow:none}
 .composer-row .stop-chat:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
+.composer-command-menu{position:absolute;left:8px;right:8px;bottom:calc(100% + 8px);max-height:min(360px,50vh);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 22px 54px rgba(23,23,23,.16);padding:9px;z-index:12}
+.composer-command-head{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d786d;font-size:12px;font-weight:900;padding:5px 7px 9px}
+.composer-command-head b{color:#171717}
+.composer-command-item{display:grid!important;grid-template-columns:86px minmax(0,1fr);gap:10px;align-items:start;width:100%;min-height:0!important;text-align:left;background:#fff!important;color:#2d2d2a!important;border:1px solid transparent!important;border-radius:14px!important;padding:10px!important;box-shadow:none!important}
+.composer-command-item:hover,.composer-command-item.active{background:#f5f4ef!important;border-color:#e1ded6!important;filter:none!important;transform:none!important}
+.composer-command-item>span{display:inline-flex;align-items:center;justify-content:center;min-height:26px;border-radius:999px;background:#f1f0eb;color:#6b6b62;font-size:11px;font-weight:900}
+.composer-command-item b{display:block;font-size:14px;line-height:1.3;overflow-wrap:anywhere}
+.composer-command-item p{margin:3px 0 0;color:#7d786d;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
 .composer-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:8px;color:#7d786d;font-size:12px}
 .message{max-width:min(860px,94%);border-radius:18px;box-shadow:none}
 .message.user{background:#171717;color:#fff;border-color:#171717;padding:12px 16px}
@@ -787,6 +795,8 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
   .prompt-list.compact{grid-template-columns:1fr}
   .composer-row{grid-template-columns:1fr}
   .composer-row button{width:100%}
+  .composer-command-menu{left:6px;right:6px;max-height:58vh}
+  .composer-command-item{grid-template-columns:68px minmax(0,1fr)!important}
 }
 
 /* Workstation refinements */

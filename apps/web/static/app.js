@@ -24,6 +24,7 @@ let chatCanvasLastSelection = {start:0,end:0,text:''};
 let chatCanvasDiffVisible = false;
 let commandItems = [];
 let commandIndex = 0;
+let composerCommandIndex = 0;
 let pendingEvidenceTarget = '';
 let knowledgeBasesCache = [];
 let knowledgeVersionCache = {};
@@ -1676,8 +1677,12 @@ function renderChat(){
           <button type="button" onclick="runChatQuickTool('codex')"><b>创建 Codex 任务</b><span>工程闭环</span></button>
         </div>
         <div class="prompt-list compact">${prompts.map(promptButton).join('')}</div>
-        <div class="composer-row"><textarea id="chatInput" rows="2" placeholder="询问数据、要求生成图表、解释指标，或创建工程任务" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button id="chatSendButton" onclick="sendChat(this)" aria-label="发送消息">发送</button><button id="chatStopButton" class="stop-chat hidden" onclick="stopChatGeneration(this)" aria-label="停止生成">停止</button></div>
-        <div class="composer-meta"><span>Enter 发送，Shift+Enter 换行</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
+        <div class="composer-row">
+          <textarea id="chatInput" rows="2" placeholder="询问数据，或输入 / 打开工具" oninput="renderComposerCommandMenu()" onkeydown="handleComposerKey(event)"></textarea>
+          <button id="chatSendButton" onclick="sendChat(this)" aria-label="发送消息">发送</button><button id="chatStopButton" class="stop-chat hidden" onclick="stopChatGeneration(this)" aria-label="停止生成">停止</button>
+          <div id="composerCommandMenu" class="composer-command-menu hidden" role="listbox" aria-label="Composer 工具菜单"></div>
+        </div>
+        <div class="composer-meta"><span>Enter 发送，Shift+Enter 换行，/ 打开工具</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
       </div>
     </section>
     <aside class="evidence-drawer trace-pane">
@@ -2183,6 +2188,94 @@ function runChatQuickTool(kind){
   }
   if(kind==='codex'){
     setCodexDraft(`改造问数体验：${short(prompt,26)}`,`围绕智能问数会话“${prompt}”创建工程任务：检查前端交互、上下文绑定、Trace 证据、SQL Guard、RBAC、审计和移动端布局，提出并实现最小可验证改造。`);
+  }
+}
+function composerCommandDefinitions(){
+  return [
+    {key:'metric',title:'解释指标',description:'生成指标口径、公式和可追问问题',hint:'/metric',run:()=>runChatQuickTool('metric')},
+    {key:'chart',title:'生成图表方案',description:'切到分析模式并生成图表提问草稿',hint:'/chart',run:()=>runChatQuickTool('chart')},
+    {key:'sql',title:'SQL 草稿到 Canvas',description:'把当前问题整理成可审计 SQL 草稿',hint:'/sql',run:()=>runChatCanvasAction('sql')},
+    {key:'canvas',title:'分析大纲到 Canvas',description:'在 Canvas 创建当前问题的分析大纲',hint:'/canvas',run:()=>runChatCanvasAction('brief')},
+    {key:'report',title:'报告要点到 Canvas',description:'生成报告要点草稿并保留本地版本',hint:'/report',run:()=>runChatCanvasAction('report')},
+    {key:'context',title:'应用工作包',description:'把 Context Pack 资产、指令和记忆边界写入 composer',hint:'/context',run:()=>applyContextPackToChat()},
+    {key:'capture',title:'捕获当前上下文',description:'把当前 Agent、数据集、Trace 和会话加入工作包',hint:'/capture',run:()=>captureContextPack()},
+    {key:'research',title:'转深度研究',description:'把当前问题带到研究计划和报告工作流',hint:'/research',run:()=>runChatQuickTool('research')},
+    {key:'codex',title:'创建 Codex 任务',description:'把当前问题转成工程改造任务草稿',hint:'/codex',run:()=>runChatQuickTool('codex')},
+    {key:'asset',title:'打开数据资产',description:'跳到数据能力页查看字段、指标和画像',hint:'/asset',run:()=>runChatQuickTool('asset')}
+  ];
+}
+function composerCommandQuery(){
+  const value=document.getElementById('chatInput')?.value||'';
+  if(!value.trim().startsWith('/')) return null;
+  return value.trim().slice(1).toLowerCase();
+}
+function composerCommandMatches(item,q=''){
+  return [item.key,item.title,item.description,item.hint].join(' ').toLowerCase().includes(q);
+}
+function currentComposerCommands(){
+  const q=composerCommandQuery();
+  if(q===null) return [];
+  return composerCommandDefinitions().filter(item=>composerCommandMatches(item,q)).slice(0,8);
+}
+function hideComposerCommandMenu(){
+  const menu=document.getElementById('composerCommandMenu');
+  if(menu) menu.classList.add('hidden');
+}
+function renderComposerCommandMenu(){
+  const menu=document.getElementById('composerCommandMenu');
+  if(!menu) return;
+  const q=composerCommandQuery();
+  if(q===null){ hideComposerCommandMenu(); return; }
+  const items=currentComposerCommands();
+  composerCommandIndex=Math.min(composerCommandIndex,Math.max(items.length-1,0));
+  menu.classList.remove('hidden');
+  menu.innerHTML=`<div class="composer-command-head"><b>工具</b><span>输入 / 后选择动作</span></div>${items.length?items.map((item,i)=>`<button type="button" role="option" aria-selected="${i===composerCommandIndex}" class="composer-command-item ${i===composerCommandIndex?'active':''}" onmousedown="event.preventDefault()" onclick="runComposerCommand(${i})"><span>${esc(item.hint)}</span><div><b>${esc(item.title)}</b><p>${esc(item.description)}</p></div></button>`).join(''):emptyState('没有匹配工具','试试 /canvas、/sql、/context 或 /codex。')}`;
+}
+function updateComposerCommandActive(){
+  document.querySelectorAll('#composerCommandMenu .composer-command-item').forEach((b,i)=>{
+    b.classList.toggle('active',i===composerCommandIndex);
+    b.setAttribute('aria-selected',String(i===composerCommandIndex));
+  });
+}
+function runComposerCommand(index=composerCommandIndex){
+  const items=currentComposerCommands();
+  const item=items[index];
+  if(!item) return;
+  const input=document.getElementById('chatInput');
+  if(input) input.value='';
+  hideComposerCommandMenu();
+  item.run();
+  toast(`${item.title} 已执行`);
+}
+function handleComposerKey(e){
+  const menu=document.getElementById('composerCommandMenu');
+  const open=menu&&!menu.classList.contains('hidden');
+  if(open&&e.key==='ArrowDown'){
+    e.preventDefault();
+    const items=currentComposerCommands();
+    composerCommandIndex=Math.min(items.length-1,composerCommandIndex+1);
+    updateComposerCommandActive();
+    return;
+  }
+  if(open&&e.key==='ArrowUp'){
+    e.preventDefault();
+    composerCommandIndex=Math.max(0,composerCommandIndex-1);
+    updateComposerCommandActive();
+    return;
+  }
+  if(open&&e.key==='Escape'){
+    e.preventDefault();
+    hideComposerCommandMenu();
+    return;
+  }
+  if(open&&e.key==='Enter'&&!e.shiftKey){
+    e.preventDefault();
+    runComposerCommand();
+    return;
+  }
+  if(e.key==='Enter'&&!e.shiftKey){
+    e.preventDefault();
+    sendChat();
   }
 }
 function renderChatCanvas(){
