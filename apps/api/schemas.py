@@ -28,6 +28,19 @@ class ChatQuery(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class SessionUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=120)
+    status: Literal["active", "archived"] | None = None
+
+
+class ReportCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    report_type: str = Field(default="chat_answer", max_length=80)
+    agent_id: str | None = None
+    content_markdown: str = Field(min_length=1, max_length=50000)
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class FeedbackCreate(BaseModel):
     session_id: str | None = None
     message_id: str | None = None

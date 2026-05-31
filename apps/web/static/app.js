@@ -9,6 +9,8 @@ let lastAnalysisTaskId = '';
 let lastSidebarTrigger = null;
 let chatSending = false;
 let chatSessions = [];
+let chatSessionFilter = {status:'active', q:''};
+let answerDraftCache = {};
 let activeSessionId = '';
 let commandItems = [];
 let commandIndex = 0;
@@ -330,6 +332,138 @@ function feedbackControls(r, meta={}){
   const ratings=[['correct','准确'],['partial','部分可用'],['wrong','有误'],['needs_review','需复核']];
   return `<div class="feedback-bar" aria-label="回答反馈"><span>这次回答</span>${ratings.map(([rating,label])=>`<button onclick="sendFeedback('${rating}','${jsArg(traceId)}','${jsArg(sessionId)}','${jsArg(messageId)}',this)">${esc(label)}</button>`).join('')}<small class="feedback-status"></small></div>`;
 }
+function answerPlainText(r){
+  const parts=[r?.answer||'', r?.report_markdown||''];
+  (r?.warnings||[]).forEach(w=>parts.push(`注意：${w}`));
+  return parts.filter(Boolean).join('\n\n')||JSON.stringify(r||{},null,2);
+}
+function cacheAnswerDraft(r,meta={}){
+  const key=meta.message_id || r?.trace_id || meta.trace_id || `answer_${Object.keys(answerDraftCache).length+1}`;
+  answerDraftCache[key]={r,meta};
+  return key;
+}
+function answerQuestion(meta={}){
+  return meta.question || currentQuestionText() || '当前问题';
+}
+function setChatComposerDraft(prompt, agentId='', datasetId=''){
+  if(activePage!=='chat'){
+    setChatDraft(prompt,agentId,datasetId);
+    return;
+  }
+  const agent=document.getElementById('chatAgent');
+  if(agentId&&agent&&[...agent.options].some(o=>o.value===agentId)) agent.value=agentId;
+  const dataset=document.getElementById('chatDataset');
+  if(datasetId&&dataset&&[...dataset.options].some(o=>o.value===datasetId)) dataset.value=datasetId;
+  const input=document.getElementById('chatInput');
+  if(input){ input.value=prompt; input.focus(); }
+}
+async function copyAnswerText(text,btn){
+  setBusy(btn,true);
+  try{
+    if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else{
+      const el=document.createElement('textarea');
+      el.value=text;
+      el.style.position='fixed';
+      el.style.opacity='0';
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      el.remove();
+    }
+    toast('答案已复制');
+  }catch(e){
+    toast('复制失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function answerBrief(r, meta={}){
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const confidence=Number(r?.confidence||0);
+  const confidenceLabel=confidence?`${Math.round(confidence*100)}%`:'-';
+  const tableRows=(r?.tables||[]).reduce((sum,t)=>sum+(t.rows||[]).length,0);
+  const items=[
+    ['可信度',confidenceLabel,'模型/规则返回'],
+    ['证据',traceId?'Trace linked':'no trace',traceId||'未返回 trace_id'],
+    ['结果',`${(r?.tables||[]).length} 表 / ${(r?.charts||[]).length} 图`,`${tableRows} 行可见数据`],
+    ['后续',`${(r?.next_actions||[]).length} actions`,(r?.warnings||[]).length?`${r.warnings.length} 条注意事项`:'无警告']
+  ];
+  return `<div class="answer-brief-grid">${items.map(([label,value,note])=>`<div class="answer-brief-item"><span>${esc(label)}</span><b>${esc(value)}</b><small>${esc(note)}</small></div>`).join('')}</div>`;
+}
+function reportMarkdownFromAnswer(r,meta={}){
+  const question=answerQuestion(meta);
+  const lines=[
+    `# ${question}`,
+    '',
+    '## 回答',
+    r?.answer||'暂无回答正文',
+  ];
+  if(r?.report_markdown) lines.push('', '## 报告草稿', r.report_markdown);
+  if((r?.warnings||[]).length) lines.push('', '## 注意事项', ...(r.warnings||[]).map(w=>`- ${w}`));
+  if((r?.next_actions||[]).length) lines.push('', '## 后续动作', ...(r.next_actions||[]).map(a=>`- ${a}`));
+  (r?.tables||[]).forEach((t,i)=>{
+    lines.push('', `## 表格 ${i+1}: ${t.name||'query_result'}`, `共 ${(t.rows||[]).length} 行；字段：${(t.columns||Object.keys((t.rows||[])[0]||{})).join(', ') || '-'}`);
+  });
+  (r?.charts||[]).forEach((c,i)=>lines.push('', `## 图表 ${i+1}: ${c.title||c.chart_type||'chart'}`, `类型：${c.chart_type||'-'}`));
+  lines.push('', '## Trace', r?.trace_id||meta.trace_id||'未返回 Trace');
+  return lines.join('\n');
+}
+function reportEvidenceFromAnswer(r,meta={}){
+  return [{
+    type:'chat_answer',
+    title:answerQuestion(meta),
+    summary:r?.answer||'Agent answer',
+    trace_id:r?.trace_id||meta.trace_id||'',
+    session_id:meta.session_id||activeSessionId||'',
+    message_id:meta.message_id||'',
+    answer_type:r?.answer_type||'text',
+    confidence:r?.confidence??null,
+    table_count:(r?.tables||[]).length,
+    chart_count:(r?.charts||[]).length
+  }];
+}
+async function saveAnswerAsReport(key,btn){
+  const cached=answerDraftCache[key];
+  if(!cached) return toast('回答上下文已失效，请重新打开会话');
+  const {r,meta}=cached;
+  setBusy(btn,true);
+  try{
+    const title=short(`问数报告：${answerQuestion(meta)}`,120);
+    const report=await api('/api/reports',{method:'POST',body:JSON.stringify({
+      title,
+      report_type:'chat_answer',
+      agent_id:document.getElementById('chatAgent')?.value||null,
+      content_markdown:reportMarkdownFromAnswer(r,meta),
+      evidence:reportEvidenceFromAnswer(r,meta)
+    })});
+    toast('已保存为报告草稿');
+    showPage('reports');
+    setTimeout(()=>openReportDetail(report.id,null),160);
+  }catch(e){
+    toast('保存报告失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function answerContextActions(r, meta={}, key=''){
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const question=answerQuestion(meta);
+  const answer=short(r?.answer||r?.report_markdown||'当前回答',180);
+  const followUp=`基于上一次问题“${question}”继续追问：请展开最关键的证据、异常点和下一步动作。`;
+  const research=`基于问题“${question}”和回答“${answer}”继续做深度研究：核对 SQL/Trace 证据，找出原因、风险和可执行建议。`;
+  const codexPrompt=`围绕问数结果“${question}”完善数据智能体平台体验：把回答、证据、后续动作和 Trace 复核做成更顺滑的工作流，保持 RBAC、SQL Guard、Trace、审计和审批能力不退化，并运行 python3 scripts/static_check.py。`;
+  const copyText=answerPlainText(r);
+  const actions=[
+    `<button class="answer-tool" data-prompt="${esc(followUp)}" onclick="setChatComposerDraft(this.dataset.prompt)">继续追问</button>`,
+    `<button class="answer-tool" data-prompt="${esc(research)}" onclick="setAnalysisDraft(this.dataset.prompt,'agent_business_analysis')">转深度研究</button>`,
+    `<button class="answer-tool" data-title="优化问数工作流" data-prompt="${esc(codexPrompt)}" onclick="setCodexDraft(this.dataset.title,this.dataset.prompt)">创建 Codex 任务</button>`,
+    key?`<button class="answer-tool" onclick="saveAnswerAsReport('${jsArg(key)}',this)">保存报告</button>`:'',
+    traceId?`<button class="answer-tool" onclick="openEvidence('${jsArg(traceId)}','steps')">定位证据</button>`:'',
+    `<button class="answer-tool ghost-tool" data-copy="${esc(copyText)}" onclick="copyAnswerText(this.dataset.copy,this)">复制</button>`
+  ].filter(Boolean);
+  return `<div class="answer-toolstrip" aria-label="回答后续动作">${actions.join('')}</div>`;
+}
 function parseJsonMaybe(text){
   try{return JSON.parse(text)}catch(e){return null}
 }
@@ -412,12 +546,29 @@ function latestTraceId(messages=[]){
   return '';
 }
 function resultHtml(r, meta={}){
-  return `<div class="answer-title">${tag('Agent Response','green')}<b>${esc(r.answer||'已返回结果')}</b>${traceButton(r.trace_id||meta.trace_id)}</div>${evidenceLinks(r,meta)}${r.report_markdown?`<div class="report">${esc(r.report_markdown)}</div>`:''}${r.codex_task?`<div class="code">Codex Task: ${esc(r.codex_task.id)} / ${esc(r.codex_task.status)} / ${esc(r.codex_task.mode)}</div>`:''}${(r.warnings||[]).map(w=>`<div class="status-warn">${esc(w)}</div>`).join('')}${(r.tables||[]).map(t=>`<h4>${esc(displayKey(t.name||'表格'))}</h4>${renderTable(t.rows||[])}`).join('')}${(r.charts||[]).map(renderChart).join('')}${(r.next_actions||[]).length?`<div class="action-list">${r.next_actions.map(actionButton).join('')}</div>`:''}${feedbackControls(r,meta)}`;
+  const answerKey=cacheAnswerDraft(r,meta);
+  return `<div class="answer-title">${tag('Agent Response','green')}<b>${esc(r.answer||'已返回结果')}</b>${traceButton(r.trace_id||meta.trace_id)}</div>
+  ${answerBrief(r,meta)}
+  ${answerContextActions(r,meta,answerKey)}
+  ${evidenceLinks(r,meta)}
+  ${r.report_markdown?`<div class="report">${esc(r.report_markdown)}</div>`:''}
+  ${r.codex_task?`<div class="code">Codex Task: ${esc(r.codex_task.id)} / ${esc(r.codex_task.status)} / ${esc(r.codex_task.mode)}</div>`:''}
+  ${(r.warnings||[]).map(w=>`<div class="status-warn">${esc(w)}</div>`).join('')}
+  ${(r.tables||[]).map(t=>`<h4>${esc(displayKey(t.name||'表格'))}</h4>${renderTable(t.rows||[])}`).join('')}
+  ${(r.charts||[]).map(renderChart).join('')}
+  ${(r.next_actions||[]).length?`<div class="action-list">${r.next_actions.map(actionButton).join('')}</div>`:''}
+  ${feedbackControls(r,meta)}`;
 }
-function chatMessageHtml(message, sessionId=''){
+function previousUserMessage(messages=[],index=0){
+  for(let i=index-1;i>=0;i--){
+    if(messages[i]?.role==='user') return messages[i].content||'';
+  }
+  return '';
+}
+function chatMessageHtml(message, sessionId='', messages=[], index=0){
   if(message.role==='user') return `<div class="message user">${esc(message.content)}</div>`;
   const parsed=message.content_type==='agent_result'?parseJsonMaybe(message.content):null;
-  return `<div class="message assistant rich-message">${parsed?resultHtml(parsed,{session_id:sessionId,message_id:message.id,trace_id:parsed.trace_id}):esc(message.content)}</div>`;
+  return `<div class="message assistant rich-message">${parsed?resultHtml(parsed,{session_id:sessionId,message_id:message.id,trace_id:parsed.trace_id,question:previousUserMessage(messages,index)}):esc(message.content)}</div>`;
 }
 function sessionTitle(s){
   return short(s.title||s.id||'新会话',42);
@@ -845,7 +996,15 @@ function renderChat(){
   <div class="assistant-shell">
     <aside class="session-rail">
       <button class="new-chat" onclick="startNewChat()">新建对话</button>
-      <div class="rail-title">最近会话</div>
+      <div class="session-controls">
+        <div class="rail-title">会话库</div>
+        <input id="sessionSearch" placeholder="搜索会话" value="${esc(chatSessionFilter.q)}" oninput="chatSessionFilter.q=this.value;renderSessionList()" aria-label="搜索会话"/>
+        <div class="session-filter" role="tablist" aria-label="会话状态">
+          <button class="${chatSessionFilter.status==='active'?'active':''}" onclick="setSessionFilter('active',this)">活跃</button>
+          <button class="${chatSessionFilter.status==='archived'?'active':''}" onclick="setSessionFilter('archived',this)">归档</button>
+          <button class="${chatSessionFilter.status==='all'?'active':''}" onclick="setSessionFilter('all',this)">全部</button>
+        </div>
+      </div>
       <div id="chatSessionList">${inlineLoading('正在读取会话')}</div>
       <div class="context-card">
         <b>工作上下文</b>
@@ -884,14 +1043,74 @@ function selectedChatContext(){
     evidence_depth:document.getElementById('traceDepth')?.value||'standard'
   };
 }
+function setSessionFilter(status,btn){
+  chatSessionFilter.status=status;
+  document.querySelectorAll('.session-filter button').forEach(b=>b.classList.toggle('active',b===btn||b.textContent.includes(status==='active'?'活跃':status==='archived'?'归档':'全部')));
+  renderSessionList();
+}
+function sessionMatches(s){
+  const status=chatSessionFilter.status||'active';
+  const q=(chatSessionFilter.q||'').trim().toLowerCase();
+  const okStatus=status==='all' || (s.status||'active')===status;
+  const haystack=[s.title,s.id,s.agent_id,s.status].filter(Boolean).join(' ').toLowerCase();
+  return okStatus && (!q || haystack.includes(q));
+}
+function sessionCard(s){
+  const archived=(s.status||'active')==='archived';
+  return `<article class="session-item ${s.id===activeSessionId?'active':''} ${archived?'archived':''}">
+    <button class="session-open" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))} · ${esc(s.agent_id||'auto')}</span></button>
+    <div class="session-actions">
+      <button title="重命名会话" onclick="renameChatSession('${jsArg(s.id)}',this)">改名</button>
+      <button title="${archived?'恢复会话':'归档会话'}" onclick="toggleChatSessionArchive('${jsArg(s.id)}',${archived},this)">${archived?'恢复':'归档'}</button>
+    </div>
+  </article>`;
+}
 function renderSessionList(){
   const box=document.getElementById('chatSessionList');
   if(!box) return;
-  box.innerHTML=chatSessions.length?chatSessions.slice(0,24).map(s=>`<button class="session-item ${s.id===activeSessionId?'active':''}" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))}</span></button>`).join(''):emptyState('暂无历史会话','发送第一条消息后会自动保存。');
+  const filtered=chatSessions.filter(sessionMatches);
+  box.innerHTML=filtered.length?filtered.slice(0,40).map(sessionCard).join(''):emptyState('暂无匹配会话','调整搜索或切换活跃/归档状态。');
 }
 async function refreshChatSessions(){
   chatSessions=await api('/api/sessions').catch(()=>[]);
   renderSessionList();
+}
+async function updateChatSession(id,payload,btn){
+  setBusy(btn,true);
+  try{
+    const updated=await api('/api/sessions/'+id,{method:'PATCH',body:JSON.stringify(payload)});
+    chatSessions=chatSessions.map(s=>s.id===id?updated:s);
+    if(updated.id===activeSessionId){
+      const title=document.getElementById('chatSessionTitle');
+      if(title) title.innerText=updated.title||updated.id;
+    }
+    renderSessionList();
+    return updated;
+  }finally{
+    setBusy(btn,false);
+  }
+}
+async function renameChatSession(id,btn){
+  const current=chatSessions.find(s=>s.id===id);
+  const title=window.prompt('重命名会话', current?.title||'');
+  if(title===null) return;
+  const next=title.trim();
+  if(!next) return toast('会话标题不能为空');
+  try{
+    await updateChatSession(id,{title:next},btn);
+    toast('会话已重命名');
+  }catch(e){
+    toast('重命名失败：'+e.message);
+  }
+}
+async function toggleChatSessionArchive(id,isArchived,btn){
+  try{
+    await updateChatSession(id,{status:isArchived?'active':'archived'},btn);
+    if(id===activeSessionId && !isArchived) startNewChat();
+    toast(isArchived?'会话已恢复':'会话已归档');
+  }catch(e){
+    toast('会话状态更新失败：'+e.message);
+  }
 }
 function startNewChat(){
   activeSessionId='';
@@ -914,7 +1133,7 @@ async function loadChatSession(id){
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=session.title||session.id;
     const agentSelect=document.getElementById('chatAgent'); if(agentSelect&&session.agent_id) agentSelect.value=session.agent_id;
     const messages=session.messages||[];
-    if(box) box.innerHTML=messages.length?messages.map(m=>chatMessageHtml(m,session.id)).join(''):chatEmptyState();
+    if(box) box.innerHTML=messages.length?messages.map((m,i)=>chatMessageHtml(m,session.id,messages,i)).join(''):chatEmptyState();
     const traceId=latestTraceId(messages);
     const trace=document.getElementById('traceBox');
     if(traceId){
@@ -1129,7 +1348,7 @@ async function sendChat(btn){
     activeSessionId=data.session_id||activeSessionId;
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=sessionTitle({title:msg});
     document.getElementById(pendingId)?.remove();
-    box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id})}</div>`;
+    box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id,question:msg})}</div>`;
     await openTrace(data.trace_id);
     await refreshChatSessions();
   }catch(e){const p=document.getElementById(pendingId); if(p) p.innerHTML=stateBanner('error','问数失败',e.message); else box.innerHTML+=`<div class="message assistant">${stateBanner('error','问数失败',e.message)}</div>`}
