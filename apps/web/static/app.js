@@ -1977,6 +1977,12 @@ function renderChatCanvas(){
     <textarea id="chatCanvasDraft" rows="9" placeholder="生成分析大纲、SQL 草稿或报告要点后，可在这里继续编辑。" oninput="chatCanvasDraft=this.value;syncCanvasSelectionState()" onselect="syncCanvasSelectionState()" onkeyup="syncCanvasSelectionState()" onclick="syncCanvasSelectionState()" onblur="recordChatCanvasVersion('手动编辑')">${esc(chatCanvasDraft)}</textarea>
     <div class="canvas-select-tools" aria-label="Canvas 选区工具">
       <span id="canvasSelectionState">选择文本后可定向编辑</span>
+      <div class="canvas-format-tools" aria-label="Markdown 格式">
+        <button class="report-action" title="加粗" aria-label="加粗选区" onclick="formatChatCanvasSelection('bold')"><b>B</b></button>
+        <button class="report-action" title="斜体" aria-label="斜体选区" onclick="formatChatCanvasSelection('italic')"><i>I</i></button>
+        <button class="report-action" title="二级标题" aria-label="设置为二级标题" onclick="formatChatCanvasSelection('heading')">H2</button>
+        <button class="report-action" title="项目列表" aria-label="设置为项目列表" onclick="formatChatCanvasSelection('bullet')">•</button>
+      </div>
       <button class="report-action" onclick="runChatCanvasEdit('polish')">润色选区</button>
       <button class="report-action" onclick="runChatCanvasEdit('evidence')">补证据</button>
       <button class="report-action" onclick="runChatCanvasEdit('shorten')">压缩</button>
@@ -2117,6 +2123,54 @@ function canvasSelectionTarget(){
     hasSelection:Boolean(selected)
   };
 }
+function replaceChatCanvasRange(start,end,nextText,status,selectionStart=0,selectionEnd=nextText.length){
+  const full=chatCanvasValue();
+  const updated=full.slice(0,start)+nextText+full.slice(end);
+  setChatCanvasDraft(updated,status,{reason:status});
+  requestAnimationFrame(()=>{
+    const el=document.getElementById('chatCanvasDraft');
+    if(!el) return;
+    const from=start+selectionStart;
+    const to=start+selectionEnd;
+    el.focus();
+    el.setSelectionRange(from,to);
+    syncCanvasSelectionState();
+  });
+}
+function markdownLineFormat(text,kind){
+  const prefix=kind==='heading'?'## ':'- ';
+  return String(text||'').split('\n').map(line=>{
+    if(!line.trim()) return line;
+    const clean=kind==='heading'
+      ? line.replace(/^\s*#{1,6}\s*/,'')
+      : line.replace(/^\s*[-*]\s+/,'');
+    return prefix+clean.trimStart();
+  }).join('\n');
+}
+function formatChatCanvasSelection(kind){
+  const el=document.getElementById('chatCanvasDraft');
+  if(!el) return toast('Canvas 未打开');
+  const full=chatCanvasValue();
+  const start=el.selectionStart||0;
+  const end=el.selectionEnd||0;
+  const selected=full.slice(start,end);
+  const inline={
+    bold:{open:'**',close:'**',placeholder:'重点',status:'Canvas 已加粗'},
+    italic:{open:'*',close:'*',placeholder:'强调',status:'Canvas 已设为斜体'}
+  };
+  if(inline[kind]){
+    const spec=inline[kind];
+    const body=selected||spec.placeholder;
+    const next=`${spec.open}${body}${spec.close}`;
+    replaceChatCanvasRange(start,end,next,spec.status,spec.open.length,spec.open.length+body.length);
+    return;
+  }
+  if(kind==='heading'||kind==='bullet'){
+    const body=selected||'小节标题';
+    const next=markdownLineFormat(body,kind);
+    replaceChatCanvasRange(start,end,next,kind==='heading'?'Canvas 已设为标题':'Canvas 已设为列表',0,next.length);
+  }
+}
 function polishedCanvasText(text){
   const lines=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean);
   if(!lines.length) return '';
@@ -2145,12 +2199,7 @@ function replaceChatCanvasTarget(nextText,status){
   const full=chatCanvasValue();
   let start=0, end=full.length;
   if(target.hasSelection){ start=target.range.start; end=target.range.end; }
-  const updated=full.slice(0,start)+nextText+full.slice(end);
-  setChatCanvasDraft(updated,status,{reason:status});
-  requestAnimationFrame(()=>{
-    const el=document.getElementById('chatCanvasDraft');
-    if(el){ el.focus(); el.setSelectionRange(start,start+nextText.length); syncCanvasSelectionState(); }
-  });
+  replaceChatCanvasRange(start,end,nextText,status,0,nextText.length);
 }
 function runChatCanvasEdit(kind){
   const target=canvasSelectionTarget();
