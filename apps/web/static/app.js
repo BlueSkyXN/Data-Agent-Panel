@@ -17,14 +17,21 @@ let commandIndex = 0;
 let pendingEvidenceTarget = '';
 let knowledgeBasesCache = [];
 let knowledgeVersionCache = {};
+let knowledgeFilterState = {q:'', backend:'all', type:'all'};
+let activeKnowledgeBaseId = '';
 let auditLogsCache = [];
 let activeAgentDetailId = '';
+let agentFilterState = {q:'', type:'all', risk:'all'};
 let panelCatalogCache = [];
 let activePanelId = '';
 let evalSetsCache = [];
 let evalCaseCache = {};
 let activeEvalSetId = '';
 let semanticFilterState = {q:'', domain:''};
+let reportsCache = [];
+let reportFilterState = {q:'', status:'all', type:'all'};
+let activeReportId = '';
+let commandAssetsLoaded = false;
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -82,7 +89,8 @@ const valueLabels={
   confidential:'敏感',internal:'内部',public:'公开',daily:'每日',month:'月',mock:'mock',http:'HTTP',cli:'CLI',sdk:'SDK',
   router:'总控路由',chatbi:'智能问数',analysis:'深度研究',knowledge:'知识问答',report:'报告生成',risk:'风险识别',
   data:'数据治理',semantic:'语义治理',panel:'面板生成',codex:'工程派发',login:'登录',chat_query:'智能问数',
-  metric:'指标',business_term:'业务术语',topn:'TopN',trend:'趋势',distribution:'分布',roi:'ROI',
+  metric:'指标',business_term:'业务术语',topn:'TopN',trend:'趋势',distribution:'分布',roi:'ROI',chat_answer:'问数报告',
+  report_asset:'报告',session:'会话',
   page:'页面',agent:'Agent',dataset:'数据集',prompt:'问题',ask:'提问'
 };
 function displayKey(k){return keyLabels[k]||String(k||'').replace(/_/g,' ')}
@@ -175,11 +183,120 @@ function agentMiniCard(a){
     <span>${esc(displayValue(a.type||'agent'))}</span><b>${esc(a.name)}</b><p>${esc(short(a.description||a.id,88))}</p><div>${statusTag(a.status)}${statusTag(a.risk_level||'low')}${a.adapter_id?tag(a.adapter_id):''}</div>
   </button>`;
 }
+function agentMatches(a){
+  const q=(agentFilterState.q||'').trim().toLowerCase();
+  const type=agentFilterState.type||'all';
+  const risk=agentFilterState.risk||'all';
+  const haystack=[a.id,a.name,a.type,a.description,a.adapter_id,a.backend_type,a.risk_level,a.status].filter(Boolean).join(' ').toLowerCase();
+  return (type==='all'||a.type===type) && (risk==='all'||(a.risk_level||'low')===risk) && (!q||haystack.includes(q));
+}
+function agentFilterOptions(key,items){
+  return items.map(([value,label])=>`<option value="${esc(value)}" ${agentFilterState[key]===value?'selected':''}>${esc(label)}</option>`).join('');
+}
+function agentFilterBar(filtered=[]){
+  const types=[['all','全部能力'],...[...new Set(agents.map(a=>a.type).filter(Boolean))].sort().map(t=>[t,displayValue(t)])];
+  const risks=[['all','全部风险'],['low','低风险'],['medium','中风险'],['high','高风险']];
+  return `<div class="agent-filter-bar">
+    <label><span>搜索 Agent</span><input id="agentSearch" value="${esc(agentFilterState.q)}" placeholder="名称、ID、Adapter、描述" oninput="setAgentFilter('q',this.value)" aria-label="搜索 Agent"/></label>
+    <label><span>能力类型</span><select id="agentTypeFilter" onchange="setAgentFilter('type',this.value)" aria-label="筛选 Agent 类型">${agentFilterOptions('type',types)}</select></label>
+    <label><span>风险</span><select id="agentRiskFilter" onchange="setAgentFilter('risk',this.value)" aria-label="筛选 Agent 风险">${agentFilterOptions('risk',risks)}</select></label>
+    <button class="report-action" onclick="resetAgentFilters()">重置</button>
+    <small id="agentResultCount" class="agent-filter-count">显示 ${filtered.length} / ${agents.length}</small>
+  </div>`;
+}
+function renderAgentDirectory(){
+  const filtered=agents.filter(agentMatches);
+  const groups={};
+  filtered.forEach(a=>{groups[a.type]=groups[a.type]||[];groups[a.type].push(a)});
+  const box=document.getElementById('agentDirectoryList');
+  if(box) box.innerHTML=filtered.length?Object.entries(groups).map(([type,list])=>`<div class="agent-mini-section"><h3>${esc(displayValue(type))} <span>${list.length}</span></h3>${list.map(agentMiniCard).join('')}</div>`).join(''):emptyState('没有匹配 Agent','调整搜索、能力类型或风险筛选。');
+  const count=document.getElementById('agentResultCount');
+  if(count) count.innerText=`显示 ${filtered.length} / ${agents.length}`;
+  if(activeAgentDetailId && !filtered.some(a=>a.id===activeAgentDetailId)){
+    activeAgentDetailId=filtered[0]?.id||'';
+    if(activeAgentDetailId) openAgentDetail(activeAgentDetailId).catch(()=>{});
+  }
+}
+function setAgentFilter(key,value){
+  agentFilterState[key]=value;
+  renderAgentDirectory();
+}
+function resetAgentFilters(){
+  agentFilterState={q:'',type:'all',risk:'all'};
+  const q=document.getElementById('agentSearch');
+  if(q) q.value='';
+  const type=document.getElementById('agentTypeFilter');
+  if(type) type.value='all';
+  const risk=document.getElementById('agentRiskFilter');
+  if(risk) risk.value='all';
+  renderAgentDirectory();
+}
+function canAdminReports(){
+  return (currentUser?.roles||[]).includes('admin');
+}
+function reportTypeLabel(type){
+  return displayValue(type||'report');
+}
+function reportTypes(reports=[]){
+  return [...new Set(reports.map(r=>r.report_type||'report').filter(Boolean))].sort();
+}
+function reportSearchText(r){
+  return [r.title,r.id,r.report_type,r.status,r.owner_id,r.agent_id,r.created_at,r.updated_at].filter(Boolean).join(' ').toLowerCase();
+}
+function reportMatches(r){
+  const q=(reportFilterState.q||'').trim().toLowerCase();
+  const status=reportFilterState.status||'all';
+  const type=reportFilterState.type||'all';
+  return (status==='all'||(r.status||'draft')===status) && (type==='all'||(r.report_type||'report')===type) && (!q||reportSearchText(r).includes(q));
+}
+function reportFilterBar(reports=[]){
+  const statusCounts=countBy(reports,'status');
+  const statuses=[
+    ['all','全部',reports.length],
+    ['draft','草稿',statusCounts.draft||0],
+    ['pending_review','待复核',statusCounts.pending_review||0],
+    ['approved','已批准',statusCounts.approved||0],
+    ['published','已发布',statusCounts.published||0]
+  ];
+  const types=reportTypes(reports);
+  return `<div class="report-filter-bar">
+    <label><span>搜索报告</span><input id="reportSearch" placeholder="标题、ID、类型、Owner" value="${esc(reportFilterState.q)}" oninput="setReportFilter('q',this.value)" aria-label="搜索报告"/></label>
+    <div class="report-filter-group" role="tablist" aria-label="报告状态">${statuses.map(([value,label,count])=>`<button data-report-status="${esc(value)}" class="${reportFilterState.status===value?'active':''}" onclick="setReportFilter('status','${jsArg(value)}')">${esc(label)} <small>${esc(count)}</small></button>`).join('')}</div>
+    <label><span>类型</span><select id="reportTypeFilter" onchange="setReportFilter('type',this.value)" aria-label="报告类型"><option value="all">全部类型</option>${types.map(t=>`<option value="${esc(t)}" ${reportFilterState.type===t?'selected':''}>${esc(reportTypeLabel(t))}</option>`).join('')}</select></label>
+    <button class="report-action" onclick="resetReportFilters()">重置</button>
+    <small id="reportAssetCount" class="report-filter-count"></small>
+  </div>`;
+}
+function syncReportFilterControls(filtered=[]){
+  document.querySelectorAll('[data-report-status]').forEach(btn=>btn.classList.toggle('active',btn.dataset.reportStatus===reportFilterState.status));
+  const type=document.getElementById('reportTypeFilter');
+  if(type && type.value!==reportFilterState.type) type.value=reportFilterState.type;
+  const count=document.getElementById('reportAssetCount');
+  if(count) count.innerText=`显示 ${filtered.length} / ${reportsCache.length}`;
+}
+function renderReportList(){
+  const filtered=reportsCache.filter(reportMatches);
+  const grid=document.getElementById('reportAssetGrid');
+  if(grid) grid.innerHTML=filtered.length?filtered.map(reportCard).join(''):emptyState('没有匹配报告','调整搜索、状态或类型筛选后再试。');
+  const table=document.getElementById('reportTablePanel');
+  if(table) table.innerHTML=renderTable(filtered,{columns:['id','title','status','report_type','owner_id','created_at','updated_at'],limit:80});
+  syncReportFilterControls(filtered);
+}
+function setReportFilter(key,value){
+  reportFilterState[key]=value;
+  renderReportList();
+}
+function resetReportFilters(){
+  reportFilterState={q:'',status:'all',type:'all'};
+  const q=document.getElementById('reportSearch');
+  if(q) q.value='';
+  renderReportList();
+}
 function reportCard(r){
   const flow=['draft','pending_review','approved','published'];
   const idx=Math.max(0,flow.indexOf(r.status||'draft'));
-  return `<article class="report-card">
-    <div class="report-card-head"><div><span>${esc(r.report_type||'report')}</span><b>${esc(r.title||r.id)}</b></div>${statusTag(r.status||'draft')}</div>
+  return `<article class="report-card ${r.id===activeReportId?'active':''}">
+    <div class="report-card-head"><div><span>${esc(reportTypeLabel(r.report_type))}</span><b>${esc(r.title||r.id)}</b></div>${statusTag(r.status||'draft')}</div>
     <div class="mini-flow">${flow.map((s,i)=>`<span class="${i<=idx?'done':''}">${esc(displayValue(s))}</span>`).join('')}</div>
     <div class="report-meta"><span>${esc(r.owner_id||'platform')}</span><span>${esc(timeText(r.updated_at||r.created_at))}</span></div>
     <div class="report-actions">${reportActionButtons(r)}</div>
@@ -190,8 +307,8 @@ function reportActionButtons(r){
   const id=jsArg(r.id);
   const buttons=[`<button class="report-action" onclick="openReportDetail('${id}',this)">查看</button>`];
   if((r.status||'draft')==='draft') buttons.push(`<button class="report-action" onclick="runReportAction('${id}','submit-review',this)">提交复核</button>`);
-  if(r.status==='pending_review') buttons.push(`<button class="report-action" onclick="runReportAction('${id}','approve',this)">批准</button>`);
-  if(r.status==='approved') buttons.push(`<button class="report-action" onclick="runReportAction('${id}','publish',this)">发布</button>`);
+  if(r.status==='pending_review') buttons.push(canAdminReports()?`<button class="report-action" onclick="runReportAction('${id}','approve',this)">批准</button>`:`<button class="report-action muted-action" disabled>待管理员批准</button>`);
+  if(r.status==='approved') buttons.push(canAdminReports()?`<button class="report-action" onclick="runReportAction('${id}','publish',this)">发布</button>`:`<button class="report-action muted-action" disabled>待管理员发布</button>`);
   return buttons.join('');
 }
 function currentReportVersion(report){
@@ -219,6 +336,31 @@ function collectTraceIds(value,set=new Set()){
   }
   return set;
 }
+function firstEvidenceField(value,fields=[]){
+  if(!value) return '';
+  if(typeof value==='object'&&!Array.isArray(value)){
+    for(const field of fields){
+      if(typeof value[field]==='string'&&value[field]) return value[field];
+    }
+    for(const val of Object.values(value)){
+      const found=firstEvidenceField(val,fields);
+      if(found) return found;
+    }
+  }
+  if(Array.isArray(value)){
+    for(const item of value){
+      const found=firstEvidenceField(item,fields);
+      if(found) return found;
+    }
+  }
+  return '';
+}
+function openReportSourceSession(sessionId,btn){
+  if(!sessionId) return toast('报告未关联来源会话');
+  setBusy(btn,true);
+  showPage('chat');
+  setTimeout(()=>loadChatSession(sessionId).finally(()=>setBusy(btn,false)),180);
+}
 function reportEvidenceCards(evidence){
   if(!evidence.length) return emptyState('暂无证据','当前版本未返回结构化 evidence_json。');
   return `<div class="report-evidence-list">${evidence.map((item,i)=>{
@@ -235,14 +377,16 @@ function reportDetailHtml(report){
   const current=currentReportVersion(report);
   const evidence=reportEvidence(report);
   const traceIds=[...collectTraceIds(evidence)];
+  const sourceSessionId=firstEvidenceField(evidence,['session_id']);
   const reportTitle=report.title||report.id;
   const reportId=report.id||reportTitle;
   const reportActions=contextActionStrip([
+    sourceSessionId?{label:'打开来源会话',onclick:`openReportSourceSession('${jsArg(sourceSessionId)}',this)`}:null,
     {label:'继续追问',onclick:`setChatDraft('${jsArg(`基于报告“${reportTitle}”继续追问：请解释核心结论、证据来源和下一步建议。`)}','agent_router')`},
     {label:'转深度研究',onclick:`setAnalysisDraft('${jsArg(`基于报告“${reportTitle}”继续做深度复盘：核对证据、风险点和可执行改进项。`)}','agent_business_analysis')`},
     {label:'创建 Codex 任务',onclick:`setCodexDraft('${jsArg(`改进报告体验：${reportTitle}`)}','${jsArg(`围绕报告 ${reportId} 检查报告中心体验、证据 Trace 入口和上下文动作，保持 RBAC、SQL Guard、Trace 和审计能力不退化。`)}')`},
     {label:'查看审计',onclick:`openAuditFiltered('${jsArg(reportId)}')`}
-  ]);
+  ].filter(Boolean));
   return `<div class="detail-panel report-detail">
     <div class="card-heading"><div><h3>${esc(report.title||report.id)}</h3><p class="muted">${esc(report.report_type||'report')} · ${esc(report.owner_id||'-')} · ${esc(timeText(report.created_at))}</p></div><div>${statusTag(report.status)}${tag(`${versions.length} versions`)}</div></div>
     <div class="report-actions">${reportActionButtons(report)}${traceIds[0]?`<button class="report-action" onclick="openReportTrace('${jsArg(traceIds[0])}','summary',this)">打开证据 Trace</button>`:''}</div>
@@ -254,12 +398,62 @@ function reportDetailHtml(report){
   </div>`;
 }
 function knowledgeCard(k,versions=[]){
-  return `<button class="knowledge-card" onclick="selectKnowledgeBase('${jsArg(k.id)}')">
+  return `<button class="knowledge-card ${k.id===activeKnowledgeBaseId?'active':''}" data-kb-id="${esc(k.id)}" onclick="selectKnowledgeBase('${jsArg(k.id)}')">
     <div class="knowledge-icon">${esc((k.type||'K').slice(0,2).toUpperCase())}</div>
     <div><div class="knowledge-head"><b>${esc(k.name||k.id)}</b>${statusTag(k.status||'active')}</div>
     <p>${esc(k.description||'暂无说明')}</p>
     <div class="knowledge-meta">${tag(k.backend_type||'backend')}${k.adapter_id?tag(k.adapter_id):''}${tag(`${versions.length||0} versions`,'green')}</div></div>
   </button>`;
+}
+function knowledgeMatches(k){
+  const q=(knowledgeFilterState.q||'').trim().toLowerCase();
+  const backend=knowledgeFilterState.backend||'all';
+  const type=knowledgeFilterState.type||'all';
+  const versions=knowledgeVersionCache[k.id]||[];
+  const bound=knowledgeBindingAgents(k);
+  const haystack=[k.id,k.name,k.type,k.backend_type,k.adapter_id,k.description,k.status,...versions.map(v=>v.version||v.status||v.id),...bound.map(a=>`${a.id} ${a.name} ${a.type}`)].filter(Boolean).join(' ').toLowerCase();
+  return (backend==='all'||k.backend_type===backend) && (type==='all'||k.type===type) && (!q||haystack.includes(q));
+}
+function knowledgeFilterOptions(key,items){
+  return items.map(([value,label])=>`<option value="${esc(value)}" ${knowledgeFilterState[key]===value?'selected':''}>${esc(label)}</option>`).join('');
+}
+function knowledgeFilterBar(filtered=[]){
+  const backends=[['all','全部后端'],...[...new Set(knowledgeBasesCache.map(k=>k.backend_type).filter(Boolean))].sort().map(v=>[v,displayValue(v)])];
+  const types=[['all','全部类型'],...[...new Set(knowledgeBasesCache.map(k=>k.type).filter(Boolean))].sort().map(v=>[v,displayValue(v)])];
+  return `<div class="knowledge-filter-bar">
+    <label><span>搜索知识库</span><input id="knowledgeSearch" value="${esc(knowledgeFilterState.q)}" placeholder="名称、ID、Adapter、绑定 Agent" oninput="setKnowledgeFilter('q',this.value)" aria-label="搜索知识库"/></label>
+    <label><span>后端</span><select id="knowledgeBackendFilter" onchange="setKnowledgeFilter('backend',this.value)" aria-label="筛选知识库后端">${knowledgeFilterOptions('backend',backends)}</select></label>
+    <label><span>类型</span><select id="knowledgeTypeFilter" onchange="setKnowledgeFilter('type',this.value)" aria-label="筛选知识库类型">${knowledgeFilterOptions('type',types)}</select></label>
+    <button class="report-action" onclick="resetKnowledgeFilters()">重置</button>
+    <small id="knowledgeResultCount" class="knowledge-filter-count">显示 ${filtered.length} / ${knowledgeBasesCache.length}</small>
+  </div>`;
+}
+function renderKnowledgeList(){
+  const filtered=knowledgeBasesCache.filter(knowledgeMatches);
+  const grid=document.getElementById('knowledgeAssetGrid');
+  if(grid) grid.innerHTML=filtered.length?filtered.map(k=>knowledgeCard(k,knowledgeVersionCache[k.id]||[])).join(''):emptyState('没有匹配知识库','调整搜索、后端或类型筛选。');
+  const table=document.getElementById('knowledgeTablePanel');
+  if(table) table.innerHTML=renderTable(filtered,{columns:['id','name','type','backend_type','adapter_id','description','status'],limit:80});
+  const count=document.getElementById('knowledgeResultCount');
+  if(count) count.innerText=`显示 ${filtered.length} / ${knowledgeBasesCache.length}`;
+  if(activeKnowledgeBaseId && !filtered.some(k=>k.id===activeKnowledgeBaseId)){
+    activeKnowledgeBaseId=filtered[0]?.id||'';
+    if(activeKnowledgeBaseId) selectKnowledgeBase(activeKnowledgeBaseId);
+  }
+}
+function setKnowledgeFilter(key,value){
+  knowledgeFilterState[key]=value;
+  renderKnowledgeList();
+}
+function resetKnowledgeFilters(){
+  knowledgeFilterState={q:'',backend:'all',type:'all'};
+  const q=document.getElementById('knowledgeSearch');
+  if(q) q.value='';
+  const backend=document.getElementById('knowledgeBackendFilter');
+  if(backend) backend.value='all';
+  const type=document.getElementById('knowledgeTypeFilter');
+  if(type) type.value='all';
+  renderKnowledgeList();
 }
 function evalSetCard(s,cases=[]){
   const tags=[...new Set(cases.flatMap(c=>Array.isArray(c.tags)?c.tags:[]))];
@@ -765,6 +959,15 @@ function openMetricCommand(metric){
     if(input){input.value=`解释${metric.name||metric.code||'这个指标'}的业务口径和可用数据集`;sendChat();}
   },80);
 }
+function openReportCommand(reportId){
+  reportFilterState={q:'',status:'all',type:'all'};
+  showPage('reports');
+  setTimeout(()=>openReportDetail(reportId,null),180);
+}
+function openSessionCommand(sessionId){
+  showPage('chat');
+  setTimeout(()=>loadChatSession(sessionId),180);
+}
 function buildCommandItems(q){
   const items=[];
   if(q) items.push({kind:'ask',title:'向 Data Agent 提问',description:q,keywords:'ask chat question',run:()=>askGlobalQuery(q)});
@@ -772,6 +975,8 @@ function buildCommandItems(q){
   items.push(...agents.map(a=>({kind:'agent',title:a.name,description:`试用 ${displayValue(a.type)} · ${displayValue(a.risk_level||'low')}`,keywords:[a.id,a.type,a.description,a.adapter_id].join(' '),run:()=>openAgentCommand(a.id)})));
   items.push(...datasets.map(d=>({kind:'dataset',title:d.name,description:`打开数据画像 · ${d.physical_table||d.id}`,keywords:[d.id,d.business_domain,d.description,d.data_classification].join(' '),run:()=>openDatasetCommand(d.id)})));
   items.push(...metrics.map(m=>({kind:'metric',title:m.name,description:`解释指标口径 · ${m.code||m.id}`,keywords:[m.id,m.code,m.formula,m.dataset_id].join(' '),run:()=>openMetricCommand(m)})));
+  items.push(...reportsCache.slice(0,80).map(r=>({kind:'report_asset',title:r.title||r.id,description:`打开报告 Canvas · ${reportTypeLabel(r.report_type)} · ${displayValue(r.status||'draft')}`,keywords:[r.id,r.report_type,r.status,r.owner_id,r.agent_id,r.created_at,r.updated_at].join(' '),run:()=>openReportCommand(r.id)})));
+  items.push(...chatSessions.slice(0,80).map(s=>({kind:'session',title:sessionTitle(s),description:`恢复会话 · ${displayValue(s.status||'active')} · ${timeText(s.updated_at)}`,keywords:[s.id,s.title,s.agent_id,s.status,s.created_at,s.updated_at].join(' '),run:()=>openSessionCommand(s.id)})));
   const prompts=['本月收入最高的渠道有哪些？','按区域统计本月收入','客户工单根因分布是什么？','解释收入指标口径','给我生成一个经营总览面板','帮我创建一个 Codex 任务，开发面板导出功能'];
   items.push(...prompts.map(p=>({kind:'prompt',title:p,description:'推荐问题',keywords:'prompt question sample',run:()=>askGlobalQuery(p)})));
   return items.filter(item=>commandMatch(item,q)).slice(0,12);
@@ -779,12 +984,13 @@ function buildCommandItems(q){
 function renderCommandMenu(){
   const input=document.getElementById('globalSearch'), menu=document.getElementById('commandMenu');
   if(!input||!menu||document.getElementById('app')?.classList.contains('hidden')) return;
+  if(!commandAssetsLoaded) refreshCommandAssets().then(()=>document.activeElement===input&&renderCommandMenu()).catch(()=>{});
   const q=input.value.trim();
   commandItems=buildCommandItems(q);
   commandIndex=0;
   input.setAttribute('aria-expanded','true');
   menu.classList.remove('hidden');
-  menu.innerHTML=`<div class="command-head"><b>全局指挥入口</b><span>Ctrl/⌘ K</span></div>${commandItems.length?commandItems.map((item,i)=>`<button role="option" aria-selected="${i===commandIndex}" class="command-item ${i===commandIndex?'active':''}" onmousedown="event.preventDefault()" onclick="runCommandItem(${i})"><span>${esc(displayValue(item.kind))}</span><div><b>${esc(item.title)}</b><p>${esc(item.description||'')}</p></div></button>`).join(''):emptyState('没有匹配结果','换一个页面、Agent、数据集、指标或业务问题试试。')}`;
+  menu.innerHTML=`<div class="command-head"><b>全局指挥入口</b><span>${commandAssetsLoaded?'页面 / Agent / 报告 / 会话':'正在同步资产'}</span></div>${commandItems.length?commandItems.map((item,i)=>`<button role="option" aria-selected="${i===commandIndex}" class="command-item ${i===commandIndex?'active':''}" onmousedown="event.preventDefault()" onclick="runCommandItem(${i})"><span>${esc(displayValue(item.kind))}</span><div><b>${esc(item.title)}</b><p>${esc(item.description||'')}</p></div></button>`).join(''):emptyState('没有匹配结果','换一个页面、Agent、报告、会话或业务问题试试。')}`;
 }
 function updateCommandActive(){
   document.querySelectorAll('#commandMenu .command-item').forEach((b,i)=>{
@@ -890,7 +1096,7 @@ function initialPageFromLocation(){
   if(window.location.pathname.startsWith('/_admin')) return 'admin';
   return 'dashboard';
 }
-async function bootstrap(){await refreshCatalog(); showPage(initialPageFromLocation());}
+async function bootstrap(){await refreshCatalog(); await refreshCommandAssets(); showPage(initialPageFromLocation());}
 function resetPageScroll(){
   document.querySelector('.main')?.scrollTo({top:0,left:0});
   window.scrollTo({top:0,left:0});
@@ -908,6 +1114,44 @@ function showPage(name){
   Promise.resolve(rendered).finally(()=>requestAnimationFrame(resetPageScroll));
 }
 function globalJump(){const q=(document.getElementById('globalSearch').value||'').trim(); hideCommandMenu(); askGlobalQuery(q)}
+function continuationTimestamp(item){
+  return item.updated_at||item.created_at||'';
+}
+function dashboardContinuationItems(){
+  const sessions=(chatSessions||[]).slice(0,10).map(s=>({
+    kind:'session',
+    id:s.id,
+    title:sessionTitle(s),
+    detail:`${displayValue(s.status||'active')} · ${s.agent_id||'auto'}`,
+    time:continuationTimestamp(s),
+    run:()=>openSessionCommand(s.id)
+  }));
+  const reports=(reportsCache||[]).slice(0,10).map(r=>({
+    kind:'report_asset',
+    id:r.id,
+    title:r.title||r.id,
+    detail:`${reportTypeLabel(r.report_type)} · ${displayValue(r.status||'draft')}`,
+    time:continuationTimestamp(r),
+    run:()=>openReportCommand(r.id)
+  }));
+  return [...sessions,...reports]
+    .sort((a,b)=>(Date.parse(b.time)||0)-(Date.parse(a.time)||0))
+    .slice(0,6);
+}
+function dashboardContinuationCard(item){
+  const label=item.kind==='session'?'恢复':'打开';
+  return `<article class="continuation-card" data-continuation-kind="${esc(item.kind)}" data-continuation-id="${esc(item.id)}">
+    <div><span>${esc(displayValue(item.kind))}</span><b>${esc(item.title)}</b><p>${esc(item.detail)} · ${esc(timeText(item.time))}</p></div>
+    <button class="report-action" onclick="${item.kind==='session'?`openSessionCommand('${jsArg(item.id)}')`:`openReportCommand('${jsArg(item.id)}')`}">${label}</button>
+  </article>`;
+}
+function dashboardContinuationPanel(){
+  const items=dashboardContinuationItems();
+  return `<div class="dashboard-continuation section-gap">
+    <section class="continuation-panel"><div class="section-title"><div><h2>继续上次工作</h2><p>最近会话和报告资产直接回到上下文，避免在多个页面里重新寻找。</p></div>${tag(`${items.length} items`)}</div>${items.length?`<div class="continuation-list">${items.map(dashboardContinuationCard).join('')}</div>`:emptyState('暂无可恢复上下文','发起问数或保存报告后，这里会显示最近工作。')}</section>
+    <aside class="command-hint-card"><span>COMMAND</span><b>Ctrl/⌘ K</b><p>搜索页面、Agent、数据集、指标、报告和会话，直接进入下一步工作。</p><button class="secondary" onclick="event.stopPropagation();document.getElementById('globalSearch')?.focus();renderCommandMenu()">打开全局指挥入口</button></aside>
+  </div>`;
+}
 
 async function renderDashboard(){
   const [stats,codexDiag,tasks]=await Promise.all([
@@ -944,6 +1188,7 @@ async function renderDashboard(){
     <div class="dashboard-composer-row"><textarea id="dashboardPrompt" rows="2" placeholder="输入一个业务问题、研究目标、面板需求或工程改造任务">本月收入最高的渠道有哪些？</textarea><div><label class="field-label" for="dashboardTarget">目标</label><select id="dashboardTarget"><option value="chat">智能问数</option><option value="analysis">深度研究</option><option value="panel">分析面板</option><option value="codex">Codex 任务</option></select><button onclick="launchDashboardIntent()">开始</button></div></div>
     <div class="prompt-strip">${sampleQuestions.map(dashboardPromptButton).join('')}</div>
   </div>
+  ${dashboardContinuationPanel()}
   <div class="dashboard-task-grid section-gap">
     ${taskQueuePanel(tasks,{title:'最近任务队列',description:'把深度研究、报告和异步任务放回控制塔，点击任务即可继续查看结果与 Trace。',detailId:'dashboardTaskDetail',traceHandler:'openDashboardTrace',limit:6})}
     ${traceDrawer('dashboardTraceBox','任务证据','从最近任务直接复核计划、SQL、工具调用和输出 Trace。')}
@@ -962,17 +1207,20 @@ async function renderDashboard(){
 
 async function renderAgents(){
   const groups={}; agents.forEach(a=>{groups[a.type]=groups[a.type]||[];groups[a.type].push(a)});
+  const filtered=agents.filter(agentMatches);
   const highRisk=agents.filter(a=>a.risk_level==='high').length;
-  activeAgentDetailId=activeAgentDetailId||agents[0]?.id||'';
+  activeAgentDetailId=activeAgentDetailId||filtered[0]?.id||agents[0]?.id||'';
   document.getElementById('page-agents').innerHTML=`${pageHeader('Agent Studio','按能力域查看内置 Agent、风险等级、Adapter 绑定和可试用入口。',['Gateway','Adapters','RBAC'])}
   <div class="metric-grid tight">${metricCard('Agent 总数',agents.length,'当前可用能力单元')}${metricCard('能力类型',Object.keys(groups).length,'路由、问数、研究、治理等')}${metricCard('高风险 Agent',highRisk,'需保留审批和审计')}${metricCard('外部 Adapter',agents.filter(a=>a.adapter_id).length,'可接入 Dify / RAGFlow 等')}</div>
   <div class="agent-studio section-gap">
     <section class="agent-directory">
       <div class="section-title"><div><h2>能力目录</h2><p>按 Agent 类型组织，选择一个能力后在右侧查看版本、知识绑定和可用动作。</p></div>${tag(`${agents.length} agents`)}</div>
-      <div class="agent-mini-list">${Object.entries(groups).map(([type,list])=>`<div class="agent-mini-section"><h3>${esc(displayValue(type))}</h3>${list.map(agentMiniCard).join('')}</div>`).join('')}</div>
+      ${agentFilterBar(filtered)}
+      <div id="agentDirectoryList" class="agent-mini-list"></div>
     </section>
     <aside class="agent-inspector" id="agentDetail">${emptyState('正在加载 Agent','选择 Agent 后显示版本、知识绑定和试用入口。')}</aside>
   </div>`;
+  renderAgentDirectory();
   if(activeAgentDetailId) openAgentDetail(activeAgentDetailId).catch(()=>{});
 }
 async function openAgentDetail(id){
@@ -1074,6 +1322,15 @@ function renderSessionList(){
 async function refreshChatSessions(){
   chatSessions=await api('/api/sessions').catch(()=>[]);
   renderSessionList();
+}
+async function refreshCommandAssets(){
+  const [sessions,reports]=await Promise.all([
+    api('/api/sessions').catch(()=>chatSessions),
+    api('/api/reports').catch(()=>reportsCache)
+  ]);
+  chatSessions=sessions||[];
+  reportsCache=reports||[];
+  commandAssetsLoaded=true;
 }
 async function updateChatSession(id,payload,btn){
   setBusy(btn,true);
@@ -1948,12 +2205,13 @@ async function loadCodexTask(btn){const id=codexTaskId.value.trim(); if(!id)retu
 
 async function renderReports(){
   const reports=await api('/api/reports').catch(()=>[]);
+  reportsCache=reports;
   const statusCounts=countBy(reports,'status');
   const latest=reports[0];
   document.getElementById('page-reports').innerHTML=`${pageHeader('报告中心','管理 AI 生成报告的草稿、复核、批准和发布状态。',['Draft','Review','Publish'])}
   <div class="metric-grid tight">${metricCard('报告资产',reports.length,'AI 生成和人工复核的报告')}${metricCard('待复核',statusCounts.pending_review||0,'需要人工确认')}${metricCard('已批准',statusCounts.approved||0,'可进入发布')}${metricCard('最近更新',latest?timeText(latest.updated_at||latest.created_at):'-','报告链路最新动作')}</div>
   <div class="report-workspace section-gap">
-    <section class="report-stream"><div class="section-title"><div><h2>报告资产流</h2><p>左侧扫读状态，右侧像 Canvas 一样查看正文、版本、证据和 Trace。</p></div>${tag(`${reports.length} reports`)}</div><div class="report-grid">${reports.length?reports.map(reportCard).join(''):emptyState('暂无报告','完成深度研究或报告生成后，这里会显示草稿、复核和发布状态。')}</div><div class="card section-gap"><div class="card-heading"><h3>报告明细</h3>${tag('audit fields')}</div>${renderTable(reports,{columns:['id','title','status','report_type','owner_id','created_at','updated_at'],limit:80})}</div></section>
+    <section class="report-stream"><div class="section-title"><div><h2>报告资产库</h2><p>像对话历史一样检索报告资产，按状态和来源类型快速收窄，再进入 Canvas 复核证据。</p></div>${tag(`${reports.length} reports`)}</div>${reportFilterBar(reports)}<div id="reportAssetGrid" class="report-grid"></div><div class="card section-gap"><div class="card-heading"><h3>报告明细</h3>${tag('audit fields')}</div><div id="reportTablePanel"></div></div></section>
     <aside class="report-side">
       <div id="reportDetail">${latest?`<button class="secondary" onclick="openReportDetail('${jsArg(latest.id)}',this)">打开最近报告</button>`:emptyState('未选择报告','选择报告后会显示正文、版本和证据。')}</div>
       ${traceDrawer('reportTraceBox','报告证据','从报告 evidence_json 中打开 Trace，复核 SQL、权限和执行步骤。')}
@@ -1961,10 +2219,13 @@ async function renderReports(){
     </aside>
   </div>
   `;
+  renderReportList();
 }
 async function openReportDetail(id, btn){
   const box=document.getElementById('reportDetail');
   if(!box) return;
+  activeReportId=id;
+  renderReportList();
   setBusy(btn,true);
   box.innerHTML=inlineLoading('正在读取报告版本和证据');
   try{
@@ -2019,6 +2280,8 @@ function knowledgeDetailHtml(kb,versions=[]){
   </div>`;
 }
 function selectKnowledgeBase(id){
+  activeKnowledgeBaseId=id;
+  document.querySelectorAll('.knowledge-card').forEach(card=>card.classList.toggle('active',card.dataset.kbId===id));
   const kb=knowledgeBasesCache.find(x=>x.id===id);
   const box=document.getElementById('knowledgeDetail');
   if(!box) return;
@@ -2044,18 +2307,22 @@ async function renderKnowledge(){
   const versionLists=await Promise.all(kbs.map(k=>api(`/api/knowledge-bases/${k.id}/versions`).catch(()=>[])));
   knowledgeBasesCache=kbs;
   knowledgeVersionCache=Object.fromEntries(kbs.map((k,i)=>[k.id,versionLists[i]||[]]));
+  activeKnowledgeBaseId=activeKnowledgeBaseId||kbs[0]?.id||'';
+  const filtered=kbs.filter(knowledgeMatches);
   const backendCounts=countBy(kbs,'backend_type');
   const adapterOptions=[...new Set([...kbs.map(k=>k.adapter_id).filter(Boolean),...agents.map(a=>a.adapter_id).filter(Boolean)])].map(id=>`<option value="${esc(id)}">${esc(id)}</option>`).join('');
   document.getElementById('page-knowledge').innerHTML=`${pageHeader('知识库','注册知识库、绑定 Agent、管理版本与引用权限，可对接 RAGFlow / Dify Knowledge。',['Knowledge binding','Versioning','Permissions'])}
   <div class="metric-grid tight">${metricCard('知识库',kbs.length,'已注册外部知识源')}${metricCard('后端类型',Object.keys(backendCounts).length,'RAGFlow、Dify 或 mock')}${metricCard('活跃版本',versionLists.flat().filter(v=>v.status==='active').length,'可被 Agent 引用')}${metricCard('Adapter',new Set(kbs.map(k=>k.adapter_id).filter(Boolean)).size,'外部连接点')}</div>
   <div class="knowledge-workspace section-gap">
-    <section class="ops-main"><div class="section-title"><div><h2>知识资产</h2><p>关注知识源、后端、版本和绑定入口，不在平台内复制真实知识内容。</p></div>${tag(`${kbs.length} bases`)}</div><div class="knowledge-grid">${kbs.length?kbs.map((k,i)=>knowledgeCard(k,versionLists[i]||[])).join(''):emptyState('暂无知识库','注册知识库后，Agent 可通过绑定关系引用外部知识。')}</div><div class="card section-gap"><div class="card-heading"><h3>知识库明细</h3>${tag('registry')}</div>${renderTable(kbs,{columns:['id','name','type','backend_type','adapter_id','description','status'],limit:80})}</div></section>
+    <section class="ops-main"><div class="section-title"><div><h2>知识资产库</h2><p>关注知识源、后端、版本和绑定入口，不在平台内复制真实知识内容。</p></div>${tag(`${kbs.length} bases`)}</div>${knowledgeFilterBar(filtered)}<div id="knowledgeAssetGrid" class="knowledge-grid"></div><div class="card section-gap"><div class="card-heading"><h3>知识库明细</h3>${tag('registry')}</div><div id="knowledgeTablePanel"></div></div></section>
     <aside class="knowledge-side">
       <div class="card form-shell"><h3>注册知识库</h3><p class="muted">只登记外部知识源和 Adapter，不在前端保存真实知识内容。</p><label class="field-label" for="kbName">名称</label><input id="kbName" value="经营政策知识库"/><div class="form-row"><div><label class="field-label" for="kbType">类型</label><select id="kbType"><option value="document">document</option><option value="faq">faq</option><option value="table">table</option></select></div><div><label class="field-label" for="kbBackend">后端</label><select id="kbBackend"><option value="mock">mock</option><option value="ragflow">ragflow</option><option value="dify">dify</option></select></div></div><label class="field-label" for="kbAdapter">Adapter</label><input id="kbAdapter" list="kbAdapterOptions" placeholder="ad_knowledge"/><datalist id="kbAdapterOptions">${adapterOptions}</datalist><label class="field-label" for="kbDescription">说明</label><textarea id="kbDescription">用于问数和报告生成时引用经营政策、产品口径和客服知识。</textarea><button onclick="createKnowledgeBase(this)">注册</button><div id="knowledgeCreateResult"></div></div>
       <div id="knowledgeDetail" class="card section-gap">${knowledgeDetailHtml(kbs[0],versionLists[0]||[])}</div>
       <div class="workflow-card section-gap"><h3>接入策略</h3>${workflowRail([['注册','记录知识库、后端类型和 Adapter。'],['版本','维护可回溯版本与 checksum。'],['绑定','按 Agent 能力域授权引用。'],['审计','保留创建、版本和引用动作。']])}</div>
     </aside>
   </div>`;
+  renderKnowledgeList();
+  if(activeKnowledgeBaseId) selectKnowledgeBase(activeKnowledgeBaseId);
 }
 async function renderEvals(){
   const sets=await api('/api/eval-sets').catch(()=>[]);
