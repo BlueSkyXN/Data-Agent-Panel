@@ -44,7 +44,10 @@ let activeReportId = '';
 let commandAssetsLoaded = false;
 let contextPackAssetFilterState = {q:'', type:'all'};
 const CONTEXT_PACK_STORAGE_KEY = 'dap_context_pack_v1';
+const CONTEXT_PACK_PRESETS_STORAGE_KEY = 'dap_context_pack_presets_v1';
 let contextPack = loadContextPack();
+let contextPackPresets = loadContextPackPresets();
+let activeContextPackPresetId = '';
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -171,6 +174,32 @@ function loadContextPack(){
   }catch(e){
     return defaultContextPack();
   }
+}
+function contextPackPresetId(){
+  return `pack_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,7)}`;
+}
+function normalizeContextPackPreset(preset={}){
+  const pack=normalizeContextPack(preset.pack||preset);
+  const name=short(String(preset.name||pack.name||'工作包预设').trim()||'工作包预设',40);
+  pack.name=name;
+  return {
+    id:String(preset.id||contextPackPresetId()).slice(0,80),
+    name,
+    pack,
+    updatedAt:String(preset.updatedAt||pack.updatedAt||new Date().toISOString()).slice(0,40)
+  };
+}
+function loadContextPackPresets(){
+  try{
+    const stored=localStorage.getItem(CONTEXT_PACK_PRESETS_STORAGE_KEY);
+    const list=stored?JSON.parse(stored):[];
+    return Array.isArray(list)?list.map(normalizeContextPackPreset).slice(0,12):[];
+  }catch(e){
+    return [];
+  }
+}
+function persistContextPackPresets(){
+  try{localStorage.setItem(CONTEXT_PACK_PRESETS_STORAGE_KEY,JSON.stringify(contextPackPresets));}catch(e){}
 }
 function contextPackHasContent(pack=contextPack){
   const p=normalizeContextPack(pack);
@@ -1752,6 +1781,19 @@ function contextPackPills(){
 function contextPackStatusText(){
   return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
 }
+function renderContextPackPresetBar(){
+  const options=contextPackPresets.map(p=>`<option value="${esc(p.id)}" ${p.id===activeContextPackPresetId?'selected':''}>${esc(p.name)} · ${esc(timeText(p.updatedAt))}</option>`).join('');
+  return `<div class="context-pack-presets" aria-label="工作包预设">
+    <label><span>项目预设</span><select id="contextPackPresetSelect" onchange="activeContextPackPresetId=this.value">
+      <option value="">选择本地预设</option>${options}
+    </select></label>
+    <div>
+      <button type="button" onclick="saveContextPackPreset(this)">保存</button>
+      <button type="button" onclick="loadContextPackPreset()">加载</button>
+      <button type="button" onclick="deleteContextPackPreset(this)">删除</button>
+    </div>
+  </div>`;
+}
 function contextPackAssetItems(){
   const q=(contextPackAssetFilterState.q||'').trim().toLowerCase();
   const type=contextPackAssetFilterState.type||'all';
@@ -1824,6 +1866,7 @@ function renderContextPackPanel(){
   const p=normalizeContextPack(contextPack);
   return `<section id="contextPackPanel" class="context-pack-card ${active?'active':''}" aria-label="工作包">
     <div class="context-pack-head"><div><span>Context Pack</span><b>${esc(contextPack.name||'默认工作包')}</b></div>${active?tag('active','green'):tag('empty')}</div>
+    ${renderContextPackPresetBar()}
     <label class="field-label" for="contextPackInstructions">工作指令</label>
     <textarea id="contextPackInstructions" rows="4" placeholder="写下这组工作要长期遵循的口径、范围或偏好。" oninput="updateContextPackInstructions(this.value)">${esc(contextPack.instructions)}</textarea>
     <div class="context-pack-memory" aria-label="工作包记忆边界">
@@ -1859,6 +1902,54 @@ function persistContextPack(opts={}){
     syncContextPackPanel();
   }
   if(opts.toast) toast(opts.toast);
+}
+function selectedContextPackPreset(){
+  const select=document.getElementById('contextPackPresetSelect');
+  const id=select?.value || activeContextPackPresetId || '';
+  return contextPackPresets.find(p=>p.id===id)||null;
+}
+function saveContextPackPreset(btn){
+  setBusy(btn,true);
+  try{
+    const existing=selectedContextPackPreset();
+    const baseName=existing?.name || contextPack.name || '默认工作包';
+    const name=window.prompt(existing?'更新工作包预设名称':'保存工作包预设',baseName);
+    if(name===null) return;
+    const clean=short(name.trim(),40);
+    if(!clean) return toast('预设名称不能为空');
+    contextPack=normalizeContextPack(Object.assign({},contextPack,{name:clean,updatedAt:new Date().toISOString()}));
+    const preset=normalizeContextPackPreset({id:existing?.id||contextPackPresetId(),name:clean,pack:contextPack,updatedAt:new Date().toISOString()});
+    contextPackPresets=[preset,...contextPackPresets.filter(p=>p.id!==preset.id)].slice(0,12);
+    activeContextPackPresetId=preset.id;
+    persistContextPackPresets();
+    persistContextPack({toast:existing?'工作包预设已更新':'工作包预设已保存'});
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function loadContextPackPreset(id=''){
+  const targetId=id || document.getElementById('contextPackPresetSelect')?.value || activeContextPackPresetId;
+  const preset=contextPackPresets.find(p=>p.id===targetId);
+  if(!preset) return toast('请选择要加载的工作包预设');
+  activeContextPackPresetId=preset.id;
+  contextPack=normalizeContextPack(Object.assign({},preset.pack,{name:preset.name,updatedAt:new Date().toISOString()}));
+  persistContextPack({toast:`已加载工作包预设：${preset.name}`});
+  if(activePage==='chat') applyContextPackToChat();
+}
+function deleteContextPackPreset(btn){
+  const preset=selectedContextPackPreset();
+  if(!preset) return toast('请选择要删除的工作包预设');
+  if(!window.confirm(`删除本地工作包预设“${preset.name}”？`)) return;
+  setBusy(btn,true);
+  try{
+    contextPackPresets=contextPackPresets.filter(p=>p.id!==preset.id);
+    if(activeContextPackPresetId===preset.id) activeContextPackPresetId='';
+    persistContextPackPresets();
+    syncContextPackPanel();
+    toast('工作包预设已删除');
+  }finally{
+    setBusy(btn,false);
+  }
 }
 function updateContextPackInstructions(value){
   contextPack.instructions=String(value||'').slice(0,1200);
