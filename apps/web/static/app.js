@@ -14,6 +14,7 @@ let chatSessions = [];
 let chatSessionFilter = {status:'active', q:''};
 let answerDraftCache = {};
 let activeSessionId = '';
+let chatCanvasDraft = '';
 let commandItems = [];
 let commandIndex = 0;
 let pendingEvidenceTarget = '';
@@ -212,7 +213,7 @@ function agentCard(a){
     <p>${esc(a.description||'暂无说明')}</p>
     <div class="agent-tags">${tag(a.type||'agent')}${statusTag(a.risk_level||'low')}${a.adapter_id?tag(a.adapter_id):''}</div>
     <div class="agent-meta"><span>Version ${esc(a.version||'-')}</span><span>${esc(a.owner_id||'platform')}</span></div>
-    <div class="agent-actions"><button class="secondary" onclick="showPage('chat');setTimeout(()=>{document.getElementById('chatAgent').value='${jsArg(a.id)}'},60)">试用</button><button class="ghost" onclick="openAgentDetail('${jsArg(a.id)}')">详情</button></div>
+    <div class="agent-actions"><button class="secondary" onclick="showPage('chat');setTimeout(()=>{document.getElementById('chatAgent').value='${jsArg(a.id)}';syncChatContextBar()},60)">试用</button><button class="ghost" onclick="openAgentDetail('${jsArg(a.id)}')">详情</button></div>
   </div>`;
 }
 function agentMiniCard(a){
@@ -616,6 +617,7 @@ function setChatComposerDraft(prompt, agentId='', datasetId=''){
   if(datasetId&&dataset&&[...dataset.options].some(o=>o.value===datasetId)) dataset.value=datasetId;
   const input=document.getElementById('chatInput');
   if(input){ input.value=prompt; input.focus(); }
+  syncChatContextBar();
 }
 async function copyAnswerText(text,btn){
   setBusy(btn,true);
@@ -950,6 +952,7 @@ function setChatDraft(prompt, agentId='', datasetId=''){
     const dataset=document.getElementById('chatDataset');
     if(datasetId&&dataset&&[...dataset.options].some(o=>o.value===datasetId)) dataset.value=datasetId;
     input.value=prompt;
+    syncChatContextBar();
     input.focus();
   });
 }
@@ -1004,6 +1007,7 @@ function openAgentCommand(agentId){
   setTimeout(()=>{
     const select=document.getElementById('chatAgent');
     if(select) select.value=agentId;
+    syncChatContextBar();
     document.getElementById('chatInput')?.focus();
   },80);
 }
@@ -1299,7 +1303,7 @@ async function openAgentDetail(id){
   const canDispatch=a.risk_level==='high'||a.require_human_approval;
   box.innerHTML=`<div class="agent-inspector-panel"><div class="card-heading"><div><h3>${esc(a.name)}</h3><p class="muted">${esc(a.description||'')}</p></div><div>${tag(a.type||'agent')}${statusTag(a.status)}${statusTag(a.risk_level)}</div></div>
   ${stateBanner(canDispatch?'warn':'success',canDispatch?'需要人工审批':'可直接试用',canDispatch?'高风险或要求人工审批的 Agent 只通过受控流程执行。':'可从智能问数入口试用，并保留 Trace。',[a.id,a.adapter_id||'no-adapter'])}
-  <div class="agent-inspector-actions"><button onclick="showPage('chat');setTimeout(()=>{document.getElementById('chatAgent').value='${jsArg(a.id)}'},80)">在问数中试用</button><button class="secondary" onclick="showPage('analysis');setTimeout(()=>{const s=document.getElementById('analysisAgent'); if(s&&[...s.options].some(o=>o.value==='${jsArg(a.id)}')) s.value='${jsArg(a.id)}'},80)">用于研究</button><button class="ghost" onclick="showPage('audit')">查看审计</button></div>
+  <div class="agent-inspector-actions"><button onclick="showPage('chat');setTimeout(()=>{document.getElementById('chatAgent').value='${jsArg(a.id)}';syncChatContextBar()},80)">在问数中试用</button><button class="secondary" onclick="showPage('analysis');setTimeout(()=>{const s=document.getElementById('analysisAgent'); if(s&&[...s.options].some(o=>o.value==='${jsArg(a.id)}')) s.value='${jsArg(a.id)}'},80)">用于研究</button><button class="ghost" onclick="showPage('audit')">查看审计</button></div>
   <h4>版本记录</h4>${renderTable(a.versions||[],{columns:['version','backend_type','adapter_id','status','created_at'],limit:20,compact:true})}
   <h4>知识绑定</h4>${renderTable(a.knowledge_bindings||[],{columns:['name','backend_type','adapter_id','status'],limit:20,compact:true})}</div>`;
 }
@@ -1322,15 +1326,23 @@ function renderChat(){
       <div id="chatSessionList">${inlineLoading('正在读取会话')}</div>
       <div class="context-card">
         <b>工作上下文</b>
-        <label class="field-label" for="chatAgent">Agent</label><select id="chatAgent" onchange="detachChatSessionForAgent()">${agentOptions()}</select>
-        <label class="field-label" for="chatDataset">数据集</label><select id="chatDataset"><option value="">自动选择</option>${datasetOptions()}</select>
-        <label class="field-label" for="traceDepth">证据深度</label><select id="traceDepth"><option value="standard">标准 Trace</option><option value="full">完整证据</option></select>
+        <label class="field-label" for="chatAgent">Agent</label><select id="chatAgent" onchange="detachChatSessionForAgent();syncChatContextBar()">${agentOptions()}</select>
+        <label class="field-label" for="chatDataset">数据集</label><select id="chatDataset" onchange="syncChatContextBar()"><option value="">自动选择</option>${datasetOptions()}</select>
+        <label class="field-label" for="traceDepth">证据深度</label><select id="traceDepth" onchange="syncChatContextBar()"><option value="standard">标准 Trace</option><option value="full">完整证据</option></select>
       </div>
     </aside>
     <section class="chat-stage">
       <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">新对话</b></div><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div></div>
       <div id="chatMessages" class="chat-thread">${chatEmptyState()}</div>
       <div class="composer-card">
+        <div id="chatContextBar">${renderChatContextBar()}</div>
+        <div class="composer-tools" aria-label="上下文快捷动作">
+          <button type="button" onclick="runChatQuickTool('metric')"><b>解释指标</b><span>口径和可追问</span></button>
+          <button type="button" onclick="runChatQuickTool('chart')"><b>生成图表</b><span>趋势或分布</span></button>
+          <button type="button" onclick="runChatQuickTool('asset')"><b>打开数据资产</b><span>字段和画像</span></button>
+          <button type="button" onclick="runChatQuickTool('research')"><b>转深度研究</b><span>计划和报告</span></button>
+          <button type="button" onclick="runChatQuickTool('codex')"><b>创建 Codex 任务</b><span>工程闭环</span></button>
+        </div>
         <div class="prompt-list compact">${prompts.map(promptButton).join('')}</div>
         <div class="composer-row"><textarea id="chatInput" rows="2" placeholder="询问数据、要求生成图表、解释指标，或创建工程任务" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}"></textarea><button onclick="sendChat(this)" aria-label="发送消息">发送</button></div>
         <div class="composer-meta"><span>Enter 发送，Shift+Enter 换行</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
@@ -1339,9 +1351,11 @@ function renderChat(){
     <aside class="evidence-drawer trace-pane">
       <div class="pane-title"><span>Trace</span><div><h2>证据</h2><p>SQL、工具调用和执行步骤在这里复核。</p></div></div>
       <div id="traceBox">${emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。')}</div>
+      ${renderChatCanvas()}
     </aside>
   </div>`;
   const router=agents.find(a=>a.id==='agent_router'); if(router) document.getElementById('chatAgent').value=router.id;
+  syncChatContextBar();
   refreshChatSessions().catch(()=>{document.getElementById('chatSessionList').innerHTML=emptyState('会话读取失败','仍可直接开始新对话。')});
 }
 function chatEmptyState(){
@@ -1349,6 +1363,169 @@ function chatEmptyState(){
 }
 function setToolMode(mode,btn){
   document.querySelectorAll('#toolMode button').forEach(b=>b.classList.toggle('active',b===btn||b.dataset.mode===mode));
+  syncChatContextBar();
+}
+function chatContextSnapshot(){
+  const agentId=document.getElementById('chatAgent')?.value || agents.find(a=>a.id==='agent_router')?.id || agents[0]?.id || '';
+  const datasetId=document.getElementById('chatDataset')?.value || '';
+  const toolMode=document.querySelector('#toolMode button.active')?.dataset.mode || 'auto';
+  const evidenceDepth=document.getElementById('traceDepth')?.value || 'standard';
+  return {
+    agent:agents.find(a=>a.id===agentId)||{id:agentId,name:agentId||'自动路由',type:'router'},
+    dataset:datasets.find(d=>d.id===datasetId)||null,
+    toolMode,
+    evidenceDepth
+  };
+}
+function chatContextChip(label,value,detail='',cls=''){
+  return `<span class="chat-context-chip ${esc(cls)}"><small>${esc(label)}</small><b>${esc(value)}</b>${detail?`<em>${esc(detail)}</em>`:''}</span>`;
+}
+function renderChatContextBar(){
+  const ctx=chatContextSnapshot();
+  const agentLabel=ctx.agent?.name || ctx.agent?.id || '自动路由';
+  const datasetLabel=ctx.dataset?.name || '自动选择';
+  const datasetDetail=ctx.dataset ? [ctx.dataset.business_domain,displayValue(ctx.dataset.data_classification||'internal')].filter(Boolean).join(' · ') : '按问题路由';
+  const toolLabels={auto:'自动',analysis:'分析',sql:'SQL',codex:'Codex'};
+  const depthLabels={standard:'标准 Trace',full:'完整证据'};
+  return `<div class="chat-context-bar" aria-live="polite">
+    ${chatContextChip('Agent',agentLabel,displayValue(ctx.agent?.type||'router'),'primary')}
+    ${chatContextChip('数据集',datasetLabel,datasetDetail)}
+    ${chatContextChip('工具',toolLabels[ctx.toolMode]||ctx.toolMode,'会话模式')}
+    ${chatContextChip('证据',depthLabels[ctx.evidenceDepth]||ctx.evidenceDepth,'Trace')}
+  </div>`;
+}
+function syncChatContextBar(){
+  const box=document.getElementById('chatContextBar');
+  if(box) box.innerHTML=renderChatContextBar();
+}
+function chatPromptSeed(){
+  const draft=(document.getElementById('chatInput')?.value||'').trim();
+  const question=currentQuestionText();
+  return draft || (question==='新对话'?'当前问题':question) || '当前问题';
+}
+function setActiveToolMode(mode){
+  document.querySelectorAll('#toolMode button').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));
+  syncChatContextBar();
+}
+function runChatQuickTool(kind){
+  const ctx=chatContextSnapshot();
+  const datasetId=ctx.dataset?.id || '';
+  const datasetName=ctx.dataset?.name || '当前数据上下文';
+  const prompt=chatPromptSeed();
+  const relatedMetrics=ctx.dataset ? metricsForDataset(ctx.dataset) : metrics;
+  const metric=relatedMetrics[0];
+  if(kind==='metric'){
+    setActiveToolMode('auto');
+    setChatComposerDraft(`解释${metric?`指标“${metric.name||metric.code}”`:'当前核心指标'}的业务口径、计算公式、适用数据集、常见误读和可以继续追问的问题。`,'agent_router',datasetId);
+    return;
+  }
+  if(kind==='chart'){
+    setActiveToolMode('analysis');
+    setChatComposerDraft(`基于${datasetName}生成适合回答“${prompt}”的图表方案，优先给出趋势、TopN 或分布，并说明图表口径和需要的 SQL Guard 约束。`,'agent_router',datasetId);
+    return;
+  }
+  if(kind==='asset'){
+    showPage('dataops');
+    setTimeout(()=>{
+      const btn=document.querySelector('#page-dataops .tabs button[data-tab="catalog"]');
+      dataTab('catalog',btn);
+      if(datasetId) setTimeout(()=>openDatasetDetail(datasetId,null),120);
+    },100);
+    return;
+  }
+  if(kind==='research'){
+    setAnalysisDraft(`基于“${prompt}”继续做深度研究：明确分析目标、数据资产、关键指标、可验证假设、风险点和报告草稿结构。`,'agent_business_analysis');
+    return;
+  }
+  if(kind==='codex'){
+    setCodexDraft(`改造问数体验：${short(prompt,26)}`,`围绕智能问数会话“${prompt}”创建工程任务：检查前端交互、上下文绑定、Trace 证据、SQL Guard、RBAC、审计和移动端布局，提出并实现最小可验证改造。`);
+  }
+}
+function renderChatCanvas(){
+  return `<section class="chat-canvas-card" aria-label="工作 Canvas">
+    <div class="pane-title canvas-title"><span>Canvas</span><div><h2>工作 Canvas</h2><p>把当前会话整理成可编辑 brief、SQL 草稿或报告大纲。</p></div></div>
+    <textarea id="chatCanvasDraft" rows="9" placeholder="生成分析大纲、SQL 草稿或报告要点后，可在这里继续编辑。" oninput="chatCanvasDraft=this.value">${esc(chatCanvasDraft)}</textarea>
+    <div class="canvas-actions">
+      <button class="report-action" onclick="runChatCanvasAction('brief')">分析大纲</button>
+      <button class="report-action" onclick="runChatCanvasAction('sql')">SQL 草稿</button>
+      <button class="report-action" onclick="runChatCanvasAction('report')">报告要点</button>
+      <button class="report-action" onclick="runChatCanvasAction('trace')">附加 Trace</button>
+      <button class="report-action" onclick="saveChatCanvasAsReport(this)">保存报告</button>
+      <button class="report-action ghost-tool" onclick="copyChatCanvas(this)">复制</button>
+    </div>
+    <small id="chatCanvasStatus" class="canvas-status">本地草稿，不会绕过报告复核或审计流程。</small>
+  </section>`;
+}
+function chatCanvasValue(){
+  const el=document.getElementById('chatCanvasDraft');
+  return el?el.value:chatCanvasDraft;
+}
+function setChatCanvasDraft(text,status='Canvas 已更新'){
+  chatCanvasDraft=text;
+  const el=document.getElementById('chatCanvasDraft');
+  if(el) el.value=text;
+  const statusBox=document.getElementById('chatCanvasStatus');
+  if(statusBox) statusBox.innerText=status;
+}
+function chatCanvasContext(){
+  const ctx=chatContextSnapshot();
+  const datasetId=ctx.dataset?.id || defaultQueryDataset();
+  const dataset=ctx.dataset || datasets.find(d=>d.id===datasetId) || null;
+  const metricList=(dataset?metricsForDataset(dataset):metrics).slice(0,4).map(m=>m.name||m.code).filter(Boolean);
+  return {
+    ctx,
+    datasetId,
+    datasetName:dataset?.name || '自动选择',
+    datasetTable:dataset?.physical_table || datasetId || 'sales_orders',
+    metrics:metricList.length?metricList:['收入','订单数','客单价'],
+    question:chatPromptSeed(),
+    traceId:currentTrace?.id || currentTrace?.trace_id || ''
+  };
+}
+function chatCanvasTemplate(kind){
+  const c=chatCanvasContext();
+  if(kind==='sql'){
+    return [`# SQL 草稿：${c.question}`,'',`数据集：${c.datasetName} (${c.datasetTable})`,'', '```sql', sampleSqlForDataset(c.datasetId), '```', '', '- 只允许只读查询', '- 执行前必须通过 SQL Guard', '- 结果需要回到 Trace 复核权限、SQL 和行数'].join('\n');
+  }
+  if(kind==='report'){
+    return [`# 报告要点：${c.question}`,'',`## 上下文`, `- Agent：${c.ctx.agent?.name||'自动路由'}`, `- 数据集：${c.datasetName}`, `- 关键指标：${c.metrics.join('、')}`, `- 证据：${c.traceId||'待生成 Trace'}`, '', '## 初步结论', '- 待基于问数回答和 Trace 补充。', '', '## 需要复核', '- SQL 口径是否匹配业务定义', '- 数据分级、masking 和 RBAC 是否满足要求', '- 是否需要转深度研究或创建 Codex 任务'].join('\n');
+  }
+  if(kind==='trace'){
+    const existing=chatCanvasValue().trim();
+    const traceText=currentTrace?[``, `## Trace 证据`, `- Trace：${currentTrace.id||currentTrace.trace_id||'-'}`, `- Agent：${currentTrace.agent_id||'-'}`, `- 状态：${displayValue(currentTrace.status||'-')}`, `- 输入：${currentTrace.input||'-'}`].join('\n'):['', '## Trace 证据', '- 当前还没有可附加的 Trace；发送问题后再附加。'].join('\n');
+    return existing ? `${existing}\n${traceText}` : traceText.trim();
+  }
+  return [`# 分析大纲：${c.question}`,'',`## 项目上下文`, `- Agent：${c.ctx.agent?.name||'自动路由'}`, `- 数据集：${c.datasetName}`, `- 工具模式：${displayValue(c.ctx.toolMode)}`, `- 证据深度：${c.ctx.evidenceDepth==='full'?'完整证据':'标准 Trace'}`, '', '## 要回答的问题', `- ${c.question}`, '', '## 关键指标', ...c.metrics.map(m=>`- ${m}`), '', '## 执行计划', '- 明确业务口径和时间范围', '- 用只读 SQL 或数据画像验证', '- 将结论、SQL、权限和步骤写入 Trace', '- 输出后续追问、深度研究或 Codex 工程任务'].join('\n');
+}
+function runChatCanvasAction(kind){
+  const labels={brief:'分析大纲',sql:'SQL 草稿',report:'报告要点',trace:'Trace'};
+  setChatCanvasDraft(chatCanvasTemplate(kind),`${labels[kind]||'Canvas'} 已生成`);
+}
+async function saveChatCanvasAsReport(btn){
+  const content=chatCanvasValue().trim();
+  if(!content) return toast('Canvas 为空');
+  setBusy(btn,true);
+  try{
+    const report=await api('/api/reports',{method:'POST',body:JSON.stringify({
+      title:short(`Canvas 报告：${chatCanvasContext().question}`,120),
+      report_type:'chat_canvas',
+      agent_id:document.getElementById('chatAgent')?.value||null,
+      content_markdown:content,
+      evidence:[{type:'chat_canvas',title:chatCanvasContext().question,summary:short(content,240),trace_id:chatCanvasContext().traceId,session_id:activeSessionId||''}]
+    })});
+    toast('Canvas 已保存为报告草稿');
+    showPage('reports');
+    setTimeout(()=>openReportDetail(report.id,null),160);
+  }catch(e){
+    toast('保存 Canvas 失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function copyChatCanvas(btn){
+  const text=chatCanvasValue().trim();
+  if(!text) return toast('Canvas 为空');
+  return copyAnswerText(text,btn);
 }
 function selectedChatContext(){
   return {
@@ -1438,9 +1615,11 @@ async function toggleChatSessionArchive(id,isArchived,btn){
 function startNewChat(){
   activeSessionId='';
   currentTrace=null;
+  chatCanvasDraft='';
   const title=document.getElementById('chatSessionTitle'); if(title) title.innerText='新对话';
   const box=document.getElementById('chatMessages'); if(box) box.innerHTML=chatEmptyState();
   const trace=document.getElementById('traceBox'); if(trace) trace.innerHTML=emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。');
+  setChatCanvasDraft('','Canvas 已清空');
   renderSessionList();
   requestAnimationFrame(()=>document.getElementById('chatInput')?.focus());
 }
@@ -1455,6 +1634,7 @@ async function loadChatSession(id){
     activeSessionId=session.id;
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=session.title||session.id;
     const agentSelect=document.getElementById('chatAgent'); if(agentSelect&&session.agent_id) agentSelect.value=session.agent_id;
+    syncChatContextBar();
     const messages=session.messages||[];
     if(box) box.innerHTML=messages.length?messages.map((m,i)=>chatMessageHtml(m,session.id,messages,i)).join(''):chatEmptyState();
     const traceId=latestTraceId(messages);
@@ -1673,6 +1853,7 @@ async function sendChat(btn){
     document.getElementById(pendingId)?.remove();
     box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id,question:msg})}</div>`;
     await openTrace(data.trace_id);
+    if(!chatCanvasValue().trim()) setChatCanvasDraft(chatCanvasTemplate('report'),'已根据本轮回答生成报告要点');
     await refreshChatSessions();
   }catch(e){const p=document.getElementById(pendingId); if(p) p.innerHTML=stateBanner('error','问数失败',e.message); else box.innerHTML+=`<div class="message assistant">${stateBanner('error','问数失败',e.message)}</div>`}
   finally{chatSending=false; input.disabled=false; setBusy(sendButton,false)}
