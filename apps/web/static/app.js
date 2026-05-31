@@ -18,6 +18,7 @@ let chatCanvasDraft = '';
 let chatCanvasVersions = [];
 let chatCanvasVersionIndex = -1;
 let chatCanvasLastSelection = {start:0,end:0,text:''};
+let chatCanvasDiffVisible = false;
 let commandItems = [];
 let commandIndex = 0;
 let pendingEvidenceTarget = '';
@@ -1486,13 +1487,16 @@ function contextPackReportTitle(id){
 function contextPackPills(){
   const p=normalizeContextPack(contextPack);
   const pills=[];
-  if(p.agentId) pills.push(['Agent',contextPackAgentName()]);
-  p.datasetIds.forEach(id=>pills.push(['数据集',datasetName(id)]));
-  p.knowledgeBaseIds.forEach(id=>pills.push(['知识库',knowledgeBaseName(id)]));
-  p.reportIds.forEach(id=>pills.push(['报告',contextPackReportTitle(id)]));
-  p.traceIds.forEach(id=>pills.push(['Trace',id]));
-  if(p.sessionId) pills.push(['会话',p.sessionId]);
-  return pills.length?`<div class="context-pack-pills">${pills.map(([label,value])=>`<span><small>${esc(label)}</small><b>${esc(short(value,34))}</b></span>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话或添加资产后，这里会显示 Agent、数据集、知识库、Trace、报告和会话线索。</p>`;
+  if(p.agentId) pills.push({kind:'agent',id:p.agentId,label:'Agent',value:contextPackAgentName()});
+  p.datasetIds.forEach(id=>pills.push({kind:'dataset',id,label:'数据集',value:datasetName(id)}));
+  p.knowledgeBaseIds.forEach(id=>pills.push({kind:'knowledge',id,label:'知识库',value:knowledgeBaseName(id)}));
+  p.reportIds.forEach(id=>pills.push({kind:'report',id,label:'报告',value:contextPackReportTitle(id)}));
+  p.traceIds.forEach(id=>pills.push({kind:'trace',id,label:'Trace',value:id}));
+  if(p.sessionId) pills.push({kind:'session',id:p.sessionId,label:'会话',value:p.sessionId});
+  return pills.length?`<div class="context-pack-pills">${pills.map(pill=>`<article class="context-pack-pill">
+    <div><small>${esc(pill.label)}</small><b>${esc(short(pill.value,34))}</b></div>
+    <nav aria-label="${esc(pill.label)} 操作"><button type="button" onclick="openContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">打开</button><button type="button" onclick="removeContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">移除</button></nav>
+  </article>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话或添加资产后，这里会显示 Agent、数据集、知识库、Trace、报告和会话线索。</p>`;
 }
 function contextPackStatusText(){
   return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
@@ -1647,6 +1651,25 @@ function addContextAssetToPack(kind,id,btn){
   if(kind==='knowledge') return addKnowledgeToContextPack(id,btn);
   if(kind==='report') return addReportToContextPack(id,btn);
 }
+function removeContextPackItem(kind,id){
+  const removeId=list=>normalizeIdList(list.filter(x=>x!==id),12);
+  if(kind==='agent') contextPack.agentId='';
+  if(kind==='dataset') contextPack.datasetIds=removeId(contextPack.datasetIds);
+  if(kind==='knowledge') contextPack.knowledgeBaseIds=removeId(contextPack.knowledgeBaseIds);
+  if(kind==='report') contextPack.reportIds=removeId(contextPack.reportIds);
+  if(kind==='trace') contextPack.traceIds=removeId(contextPack.traceIds);
+  if(kind==='session') contextPack.sessionId='';
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'已从工作包移除'});
+}
+function openContextPackItem(kind,id){
+  if(kind==='agent') return openAgentCommand(id);
+  if(kind==='dataset') return openDatasetCommand(id);
+  if(kind==='knowledge') return openKnowledgeCommand(id);
+  if(kind==='report') return openReportCommand(id);
+  if(kind==='trace'){ showPage('chat'); setTimeout(()=>openTrace(id),120); return; }
+  if(kind==='session') return openSessionCommand(id);
+}
 function addTraceToContextPack(traceId,btn){
   if(!traceId) return;
   setBusy(btn,true);
@@ -1800,6 +1823,7 @@ function renderChatCanvas(){
       <button class="report-action ghost-tool" onclick="copyChatCanvas(this)">复制</button>
     </div>
     <div id="chatCanvasVersionBar">${renderChatCanvasVersionBar()}</div>
+    <div id="chatCanvasDiffPanel">${chatCanvasDiffVisible?renderChatCanvasDiffPanel():''}</div>
     <small id="chatCanvasStatus" class="canvas-status">本地草稿，不会绕过报告复核或审计流程。</small>
   </section>`;
 }
@@ -1844,6 +1868,7 @@ function recordChatCanvasVersion(reason='版本记录'){
   if(!text.trim()){ syncChatCanvasVersionBar(); return; }
   const current=chatCanvasVersions[chatCanvasVersionIndex];
   if(current&&current.text===text){ syncChatCanvasVersionBar(); return; }
+  chatCanvasDiffVisible=false;
   if(chatCanvasVersionIndex<chatCanvasVersions.length-1) chatCanvasVersions=chatCanvasVersions.slice(0,chatCanvasVersionIndex+1);
   chatCanvasVersions.push({text,reason,at:new Date().toISOString()});
   if(chatCanvasVersions.length>12) chatCanvasVersions=chatCanvasVersions.slice(-12);
@@ -1854,24 +1879,65 @@ function renderChatCanvasVersionBar(){
   const total=chatCanvasVersions.length;
   const current=total?chatCanvasVersionIndex+1:0;
   const item=total?chatCanvasVersions[chatCanvasVersionIndex]:null;
+  const canDiff=total>1&&chatCanvasVersionIndex>0;
   return `<div class="canvas-version-bar">
     <span>${total?`版本 ${current}/${total} · ${esc(item.reason||'更新')} · ${esc(timeText(item.at))}`:'暂无版本记录'}</span>
     <div>
       <button class="report-action" onclick="recordChatCanvasVersion('手动记录')" ${chatCanvasValue().trim()?'':'disabled'}>记录</button>
       <button class="report-action" onclick="restoreChatCanvasVersion(-1)" ${current>1?'':'disabled'}>上一版</button>
       <button class="report-action" onclick="restoreChatCanvasVersion(1)" ${current<total?'':'disabled'}>下一版</button>
+      <button class="report-action ghost-tool" onclick="toggleChatCanvasDiff()" ${canDiff?'':'disabled'}>${chatCanvasDiffVisible?'隐藏变化':'变化'}</button>
     </div>
   </div>`;
 }
 function syncChatCanvasVersionBar(){
   const bar=document.getElementById('chatCanvasVersionBar');
   if(bar) bar.innerHTML=renderChatCanvasVersionBar();
+  const diff=document.getElementById('chatCanvasDiffPanel');
+  if(diff) diff.innerHTML=chatCanvasDiffVisible?renderChatCanvasDiffPanel():'';
 }
 function restoreChatCanvasVersion(delta){
   const next=chatCanvasVersionIndex+delta;
   if(next<0||next>=chatCanvasVersions.length) return;
   chatCanvasVersionIndex=next;
+  chatCanvasDiffVisible=false;
   setChatCanvasDraft(chatCanvasVersions[next].text,`已恢复到版本 ${next+1}`,{record:false});
+}
+function toggleChatCanvasDiff(){
+  if(chatCanvasVersions.length<2||chatCanvasVersionIndex<1) return;
+  chatCanvasDiffVisible=!chatCanvasDiffVisible;
+  syncChatCanvasVersionBar();
+}
+function canvasLineDiff(before='',after=''){
+  const a=String(before||'').split('\n');
+  const b=String(after||'').split('\n');
+  const dp=Array.from({length:a.length+1},()=>Array(b.length+1).fill(0));
+  for(let i=a.length-1;i>=0;i--){
+    for(let j=b.length-1;j>=0;j--){
+      dp[i][j]=a[i]===b[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+    }
+  }
+  const rows=[];
+  let i=0,j=0;
+  while(i<a.length&&j<b.length){
+    if(a[i]===b[j]){ rows.push({type:'same',text:a[i]}); i++; j++; }
+    else if(dp[i+1][j]>=dp[i][j+1]){ rows.push({type:'del',text:a[i++]}); }
+    else{ rows.push({type:'add',text:b[j++]}); }
+  }
+  while(i<a.length) rows.push({type:'del',text:a[i++]});
+  while(j<b.length) rows.push({type:'add',text:b[j++]});
+  return rows;
+}
+function renderChatCanvasDiffPanel(){
+  const current=chatCanvasVersions[chatCanvasVersionIndex];
+  const previous=chatCanvasVersions[chatCanvasVersionIndex-1];
+  if(!current||!previous) return '';
+  const rows=canvasLineDiff(previous.text,current.text).filter(row=>row.type!=='same'||row.text.trim()).slice(0,120);
+  const changed=rows.filter(row=>row.type!=='same').length;
+  return `<div class="canvas-diff-panel" aria-live="polite">
+    <div class="canvas-diff-head"><b>版本变化</b><span>对比 ${chatCanvasVersionIndex} → ${chatCanvasVersionIndex+1} · ${changed} 处变化</span></div>
+    <div class="canvas-diff-list">${rows.length?rows.map(row=>`<div class="canvas-diff-line ${row.type}"><span>${row.type==='add'?'+':row.type==='del'?'-':' '}</span><code>${esc(row.text||' ')}</code></div>`).join(''):emptyState('没有可显示变化','当前版本和上一版内容一致。')}</div>
+  </div>`;
 }
 function canvasSelectionTarget(){
   const selection=chatCanvasSelection();
