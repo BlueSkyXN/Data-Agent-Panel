@@ -25,6 +25,7 @@ let chatCanvasDiffVisible = false;
 let commandItems = [];
 let commandIndex = 0;
 let composerCommandIndex = 0;
+let composerContextFilterState = {q:'', type:'all'};
 let pendingEvidenceTarget = '';
 let knowledgeBasesCache = [];
 let knowledgeVersionCache = {};
@@ -1678,11 +1679,13 @@ function renderChat(){
         </div>
         <div class="prompt-list compact">${prompts.map(promptButton).join('')}</div>
         <div class="composer-row">
+          <button type="button" class="composer-add-button" onclick="toggleComposerContextMenu()" aria-label="添加上下文">+</button>
           <textarea id="chatInput" rows="2" placeholder="询问数据，或输入 / 打开工具" oninput="renderComposerCommandMenu()" onkeydown="handleComposerKey(event)"></textarea>
           <button id="chatSendButton" onclick="sendChat(this)" aria-label="发送消息">发送</button><button id="chatStopButton" class="stop-chat hidden" onclick="stopChatGeneration(this)" aria-label="停止生成">停止</button>
+          <div id="composerContextMenu" class="composer-context-menu hidden" role="menu" aria-label="添加上下文"></div>
           <div id="composerCommandMenu" class="composer-command-menu hidden" role="listbox" aria-label="Composer 工具菜单"></div>
         </div>
-        <div class="composer-meta"><span>Enter 发送，Shift+Enter 换行，/ 打开工具</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
+        <div class="composer-meta"><span>+ 添加上下文，/ 打开工具，Enter 发送</span><span>SQL Guard / RBAC / Trace 始终保留</span></div>
       </div>
     </section>
     <aside class="evidence-drawer trace-pane">
@@ -1736,6 +1739,122 @@ function renderChatContextBar(){
 function syncChatContextBar(){
   const box=document.getElementById('chatContextBar');
   if(box) box.innerHTML=renderChatContextBar();
+}
+function composerContextItems(){
+  const q=(composerContextFilterState.q||'').trim().toLowerCase();
+  const type=composerContextFilterState.type||'all';
+  const items=[
+    ...datasets.map(d=>({
+      kind:'dataset',
+      label:'数据集',
+      id:d.id,
+      title:d.name||d.id,
+      detail:[d.business_domain,d.physical_table,displayValue(d.data_classification||'internal')].filter(Boolean).join(' · '),
+      keywords:[d.id,d.name,d.physical_table,d.business_domain,d.description,d.data_classification].join(' ')
+    })),
+    ...knowledgeBasesCache.map(k=>({
+      kind:'knowledge',
+      label:'知识库',
+      id:k.id,
+      title:k.name||k.id,
+      detail:[displayValue(k.backend_type||'mock'),displayValue(k.type||'document'),k.adapter_id].filter(Boolean).join(' · '),
+      keywords:[k.id,k.name,k.backend_type,k.type,k.adapter_id,k.description].join(' ')
+    })),
+    ...reportsCache.slice(0,80).map(r=>({
+      kind:'report',
+      label:'报告',
+      id:r.id,
+      title:r.title||r.id,
+      detail:[reportTypeLabel(r.report_type),displayValue(r.status||'draft'),timeText(r.updated_at||r.created_at)].filter(Boolean).join(' · '),
+      keywords:[r.id,r.title,r.report_type,r.status,r.owner_id,r.agent_id,r.created_at,r.updated_at].join(' ')
+    }))
+  ];
+  return items
+    .filter(item=>(type==='all'||item.kind===type)&&(!q||[item.id,item.title,item.detail,item.keywords].join(' ').toLowerCase().includes(q)))
+    .slice(0,6);
+}
+function composerContextItemListHtml(){
+  const items=composerContextItems();
+  const pack=normalizeContextPack(contextPack);
+  if(!items.length) return emptyState('没有匹配上下文','试试搜索数据集、知识库或报告资产。');
+  return `<div class="composer-context-list">${items.map(item=>{
+    const selected=contextPackAssetInPack(item.kind,item.id,pack);
+    return `<article class="composer-context-item ${selected?'selected':''}">
+      <div><small>${esc(item.label)}</small><b>${esc(short(item.title,38))}</b><span>${esc(short(item.detail||item.id,64))}</span></div>
+      <button type="button" class="report-action ${selected?'muted-action':''}" ${selected?'disabled':''} onclick="addComposerContextAsset('${jsArg(item.kind)}','${jsArg(item.id)}',this)">${selected?'已加入':'加入'}</button>
+    </article>`;
+  }).join('')}</div>`;
+}
+function composerContextMenuHtml(){
+  const type=composerContextFilterState.type||'all';
+  const p=normalizeContextPack(contextPack);
+  return `<div class="composer-context-head"><div><b>添加上下文</b><span>${esc(contextPackSummaryLabel())} · ${esc(contextPackSummaryDetail())}</span></div><button type="button" aria-label="关闭添加上下文" onclick="hideComposerContextMenu()">×</button></div>
+    <div class="composer-context-actions" aria-label="上下文快捷动作">
+      <button type="button" onclick="runComposerContextAction('capture')"><b>捕获当前</b><span>Agent / 数据集 / Trace</span></button>
+      <button type="button" onclick="runComposerContextAction('apply')"><b>应用工作包</b><span>写入当前提问</span></button>
+      <button type="button" onclick="runComposerContextAction('canvas')"><b>写入 Canvas</b><span>整理为上下文 brief</span></button>
+    </div>
+    <div class="composer-context-options" aria-label="上下文边界">
+      <span>记忆</span>
+      <button type="button" class="${p.memoryMode==='project'?'active':''}" onclick="setComposerContextMemory('project')">项目内</button>
+      <button type="button" class="${p.memoryMode==='default'?'active':''}" onclick="setComposerContextMemory('default')">默认</button>
+      <button type="button" class="${p.includeCanvas?'active':''}" onclick="toggleComposerContextCanvas()">${p.includeCanvas?'带 Canvas':'不带 Canvas'}</button>
+    </div>
+    <div class="composer-context-filter">
+      <label><span>搜索</span><input id="composerContextSearch" value="${esc(composerContextFilterState.q||'')}" placeholder="数据集、知识库、报告" oninput="updateComposerContextSearch(this.value)"/></label>
+      <label><span>类型</span><select onchange="setComposerContextType(this.value)">
+        ${[['all','全部'],['dataset','数据集'],['knowledge','知识库'],['report','报告']].map(([value,label])=>`<option value="${value}" ${type===value?'selected':''}>${label}</option>`).join('')}
+      </select></label>
+    </div>
+    ${composerContextItemListHtml()}`;
+}
+function renderComposerContextMenu(focusSearch=false){
+  const menu=document.getElementById('composerContextMenu');
+  if(!menu) return;
+  menu.innerHTML=composerContextMenuHtml();
+  menu.classList.remove('hidden');
+  if(focusSearch) setTimeout(()=>document.getElementById('composerContextSearch')?.focus(),0);
+}
+function toggleComposerContextMenu(){
+  const menu=document.getElementById('composerContextMenu');
+  if(!menu) return;
+  if(menu.classList.contains('hidden')){
+    hideComposerCommandMenu();
+    renderComposerContextMenu(true);
+  }else{
+    hideComposerContextMenu();
+  }
+}
+function hideComposerContextMenu(){
+  const menu=document.getElementById('composerContextMenu');
+  if(menu) menu.classList.add('hidden');
+}
+function updateComposerContextSearch(value){
+  composerContextFilterState.q=String(value||'').slice(0,80);
+  renderComposerContextMenu(true);
+}
+function setComposerContextType(type){
+  composerContextFilterState.type=['all','dataset','knowledge','report'].includes(type)?type:'all';
+  renderComposerContextMenu(true);
+}
+function addComposerContextAsset(kind,id,btn){
+  addContextAssetToPack(kind,id,btn);
+  renderComposerContextMenu(false);
+}
+function setComposerContextMemory(mode){
+  setContextPackMemoryMode(mode);
+  renderComposerContextMenu(false);
+}
+function toggleComposerContextCanvas(){
+  const p=normalizeContextPack(contextPack);
+  toggleContextPackCanvas(!p.includeCanvas);
+  renderComposerContextMenu(false);
+}
+function runComposerContextAction(action){
+  if(action==='capture') captureContextPack();
+  if(action==='apply') applyContextPackToChat();
+  if(action==='canvas') writeContextPackToCanvas();
+  renderComposerContextMenu(false);
 }
 function contextPackCounts(){
   const p=normalizeContextPack(contextPack);
@@ -2226,6 +2345,7 @@ function renderComposerCommandMenu(){
   if(!menu) return;
   const q=composerCommandQuery();
   if(q===null){ hideComposerCommandMenu(); return; }
+  hideComposerContextMenu();
   const items=currentComposerCommands();
   composerCommandIndex=Math.min(composerCommandIndex,Math.max(items.length-1,0));
   menu.classList.remove('hidden');
@@ -2244,6 +2364,7 @@ function runComposerCommand(index=composerCommandIndex){
   const input=document.getElementById('chatInput');
   if(input) input.value='';
   hideComposerCommandMenu();
+  hideComposerContextMenu();
   item.run();
   toast(`${item.title} 已执行`);
 }
@@ -2275,6 +2396,7 @@ function handleComposerKey(e){
   }
   if(e.key==='Enter'&&!e.shiftKey){
     e.preventDefault();
+    hideComposerContextMenu();
     sendChat();
   }
 }

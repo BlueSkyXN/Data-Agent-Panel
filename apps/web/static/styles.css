@@ -700,12 +700,40 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .composer-tools span{font-size:11px;color:#7d786d;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
 .prompt-list.compact{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:10px}
 .prompt-list.compact .prompt-pill{min-height:34px;padding:8px 10px;font-size:12px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.composer-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:20px;padding:8px;position:relative}
+.composer-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:10px;align-items:end;background:#fff;border:1px solid var(--line);border-radius:20px;padding:8px;position:relative}
 .composer-row textarea{border:0;min-height:48px;max-height:140px;padding:8px 10px;background:transparent;resize:vertical}
 .composer-row textarea:focus-visible{outline:0}
 .composer-row button{border-radius:999px;min-width:72px;min-height:40px}
+.composer-row .composer-add-button{min-width:42px;width:42px;padding:0;background:#f1f0eb;color:#171717;border:1px solid var(--line);box-shadow:none;font-size:22px;font-weight:750;line-height:1}
+.composer-row .composer-add-button:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
 .composer-row .stop-chat{background:#eceae3;color:#171717;border:1px solid var(--line);box-shadow:none}
 .composer-row .stop-chat:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
+.composer-context-menu{position:absolute;left:8px;bottom:calc(100% + 8px);width:min(520px,calc(100% - 16px));max-height:min(520px,68vh);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 22px 54px rgba(23,23,23,.16);padding:10px;z-index:14}
+.composer-context-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;padding:4px 4px 10px}
+.composer-context-head b{display:block;font-size:15px;line-height:1.3}
+.composer-context-head span{display:block;color:#7d786d;font-size:12px;line-height:1.35;margin-top:2px}
+.composer-context-head button{min-width:30px;width:30px;min-height:30px;background:#f6f5ef;color:#4b4842;border:1px solid var(--line);box-shadow:none;padding:0}
+.composer-context-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-bottom:8px}
+.composer-context-actions button{display:grid;gap:3px;align-content:start;text-align:left;min-width:0;min-height:58px;background:#fbfaf7;color:#2d2d2a;border:1px solid var(--line);border-radius:14px;padding:9px;box-shadow:none}
+.composer-context-actions button:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
+.composer-context-actions b{font-size:12px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.composer-context-actions span{font-size:11px;color:inherit;opacity:.68;line-height:1.25;overflow:hidden;text-overflow:ellipsis}
+.composer-context-options{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;gap:6px;align-items:center;background:#fbfaf7;border:1px solid var(--line);border-radius:14px;padding:7px;margin-bottom:8px}
+.composer-context-options span{padding-left:3px;color:#7d786d;font-size:10px;font-weight:900;text-transform:uppercase}
+.composer-context-options button{min-width:0;min-height:30px;padding:5px 9px;background:#fff;color:#4b4842;border:1px solid var(--line);box-shadow:none;font-size:11px}
+.composer-context-options button.active{background:#171717;color:#fff;border-color:#171717}
+.composer-context-filter{display:grid;grid-template-columns:minmax(0,1fr) 104px;gap:7px;margin-bottom:8px}
+.composer-context-filter label{display:grid;gap:4px;min-width:0}
+.composer-context-filter span{color:#7d786d;font-size:10px;font-weight:900;text-transform:uppercase}
+.composer-context-filter input,.composer-context-filter select{min-height:34px;border-radius:12px;font-size:12px}
+.composer-context-list{display:grid;gap:6px}
+.composer-context-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:13px;padding:8px;min-width:0}
+.composer-context-item.selected{background:#f6fbf7;border-color:#cfe8dc}
+.composer-context-item div{display:grid;gap:2px;min-width:0}
+.composer-context-item small{color:#7d786d;font-size:10px;font-weight:900;text-transform:uppercase}
+.composer-context-item b{font-size:12px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.composer-context-item span{color:#6b6b62;font-size:11px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.composer-context-item .report-action{min-width:58px;padding:6px 8px;font-size:11px}
 .composer-command-menu{position:absolute;left:8px;right:8px;bottom:calc(100% + 8px);max-height:min(360px,50vh);overflow:auto;background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:0 22px 54px rgba(23,23,23,.16);padding:9px;z-index:12}
 .composer-command-head{display:flex;justify-content:space-between;gap:10px;align-items:center;color:#7d786d;font-size:12px;font-weight:900;padding:5px 7px 9px}
 .composer-command-head b{color:#171717}
@@ -793,8 +821,13 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
   .canvas-version-bar{display:grid}
   .canvas-version-bar div{justify-content:flex-start}
   .prompt-list.compact{grid-template-columns:1fr}
-  .composer-row{grid-template-columns:1fr}
-  .composer-row button{width:100%}
+  .composer-row{grid-template-columns:auto minmax(0,1fr)}
+  .composer-row .composer-add-button{width:42px!important;min-width:42px}
+  .composer-row #chatSendButton,.composer-row #chatStopButton{grid-column:1 / -1;width:100%}
+  .composer-context-menu{left:6px;right:6px;width:auto;max-height:62vh}
+  .composer-context-actions,.composer-context-filter{grid-template-columns:1fr}
+  .composer-context-options{grid-template-columns:1fr 1fr}
+  .composer-context-options span{grid-column:1 / -1}
   .composer-command-menu{left:6px;right:6px;max-height:58vh}
   .composer-command-item{grid-template-columns:68px minmax(0,1fr)!important}
 }
