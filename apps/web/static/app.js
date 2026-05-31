@@ -15,6 +15,7 @@ let chatSessions = [];
 let chatSessionFilter = {status:'active', q:''};
 let answerDraftCache = {};
 let activeSessionId = '';
+let activeChatMessages = [];
 let chatCanvasDraft = '';
 let chatCanvasVersions = [];
 let chatCanvasVersionIndex = -1;
@@ -665,7 +666,7 @@ function setChatComposerDraft(prompt, agentId='', datasetId=''){
   if(input){ input.value=prompt; input.focus(); }
   syncChatContextBar();
 }
-async function copyAnswerText(text,btn){
+async function copyAnswerText(text,btn,success='答案已复制'){
   setBusy(btn,true);
   try{
     if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
@@ -679,7 +680,7 @@ async function copyAnswerText(text,btn){
       document.execCommand('copy');
       el.remove();
     }
-    toast('答案已复制');
+    toast(success);
   }catch(e){
     toast('复制失败：'+e.message);
   }finally{
@@ -1012,6 +1013,111 @@ function chatMessageHtml(message, sessionId='', messages=[], index=0){
   if(message.role==='user') return userMessageHtml(message.content);
   const parsed=message.content_type==='agent_result'?parseJsonMaybe(message.content):null;
   return `<div class="message assistant rich-message">${parsed?resultHtml(parsed,{session_id:sessionId,message_id:message.id,trace_id:parsed.trace_id,question:previousUserMessage(messages,index)}):esc(message.content)}</div>`;
+}
+function chatBriefMessages(){
+  return (activeChatMessages||[]).filter(m=>['user','assistant'].includes(m.role)&&String(m.content||'').trim());
+}
+function syncChatBriefControls(){
+  const hasMessages=chatBriefMessages().length>0;
+  document.querySelectorAll('.brief-strip button').forEach(btn=>{btn.disabled=!hasMessages;});
+}
+function assistantMessageText(message){
+  const parsed=message?.content_type==='agent_result'?parseJsonMaybe(message.content):null;
+  if(parsed){
+    const parts=[parsed.answer||'',parsed.report_markdown||''];
+    (parsed.warnings||[]).forEach(w=>parts.push(`注意：${w}`));
+    return parts.filter(Boolean).join('\n\n');
+  }
+  return String(message?.content||'');
+}
+function briefBulletLines(text,limit=5){
+  const cleaned=String(text||'')
+    .replace(/```[\s\S]*?```/g,'')
+    .split(/\n+/)
+    .map(line=>line.replace(/^\s*(#{1,6}\s+|[-*]\s+|\d+\.\s+)/,'').trim())
+    .filter(Boolean)
+    .filter(line=>!/^Trace[:：]/i.test(line))
+    .slice(0,limit);
+  return cleaned.length?cleaned.map(line=>`- ${short(line,130)}`):['- 待生成可复用回答摘要。'];
+}
+function buildChatBriefMarkdown(){
+  const messages=chatBriefMessages();
+  if(!messages.length) return '';
+  const ctx=chatContextSnapshot();
+  const title=(document.getElementById('chatSessionTitle')?.innerText||messages.find(m=>m.role==='user')?.content||'当前会话').trim();
+  const questions=messages.filter(m=>m.role==='user').map(m=>String(m.content||'').trim()).filter(Boolean);
+  const latestAnswer=[...messages].reverse().find(m=>m.role==='assistant');
+  const traceIds=[...new Set([...messages.map(messageTraceId).filter(Boolean), activeTraceId()].filter(Boolean))].slice(0,6);
+  const context=normalizeContextPack(contextPack);
+  const lines=[
+    `# 会话 Brief：${title}`,
+    '',
+    `- 生成时间：${new Date().toISOString()}`,
+    `- 会话：${activeSessionId||'尚未保存的新对话'}`,
+    `- Agent：${ctx.agent?.name||ctx.agent?.id||'自动路由'}`,
+    `- 数据集：${ctx.dataset?.name||'自动选择'}`,
+    `- 工具模式：${displayValue(ctx.toolMode)}`,
+    `- 证据深度：${ctx.evidenceDepth==='full'?'完整证据':'标准 Trace'}`,
+    `- 记忆边界：${context.memoryMode==='project'?'项目内':'默认会话'}`,
+    '',
+    '## 关键问题',
+    ...(questions.length?questions.slice(-6).map(q=>`- ${short(q,140)}`):['- 尚未记录用户问题。']),
+    '',
+    '## 最新回答摘要',
+    ...briefBulletLines(latestAnswer?assistantMessageText(latestAnswer):'',5),
+    '',
+    '## 证据与边界',
+    `- Trace：${traceIds.length?traceIds.join('、'):'待生成 Trace'}`,
+    '- RBAC、SQL Guard、masking 和审计仍以后端结果为准。',
+    '- 该 Brief 是当前浏览器会话快照，不是公开分享链接。',
+    '',
+    '## 下一步',
+    '- 将 Brief 写入 Canvas 后继续整理为报告草稿。',
+    '- 如需扩大问题范围，可转深度研究或创建 Codex 工程任务。',
+    '- 保存报告前复核 Trace、SQL、权限和数据分级。'
+  ];
+  return lines.join('\n');
+}
+function writeChatBriefToCanvas(btn){
+  const brief=buildChatBriefMarkdown();
+  if(!brief) return toast('当前会话还没有可生成 Brief 的消息');
+  setBusy(btn,true);
+  try{
+    const existing=chatCanvasValue().trim();
+    const next=existing?`${existing}\n\n---\n\n${brief}`:brief;
+    setChatCanvasDraft(next,existing?'会话 Brief 已追加到 Canvas':'会话 Brief 已写入 Canvas',{reason:'会话 Brief'});
+  }finally{
+    setBusy(btn,false);
+  }
+}
+function copyChatBrief(btn){
+  const brief=buildChatBriefMarkdown();
+  if(!brief) return toast('当前会话还没有可复制的 Brief');
+  return copyAnswerText(brief,btn,'会话 Brief 已复制');
+}
+function downloadChatBriefMarkdown(btn){
+  const brief=buildChatBriefMarkdown();
+  if(!brief) return toast('当前会话还没有可下载的 Brief');
+  setBusy(btn,true);
+  try{
+    const date=new Date().toISOString().slice(0,10);
+    const title=document.getElementById('chatSessionTitle')?.innerText||'chat-brief';
+    const filename=`${safeDownloadStem(title,'chat-brief')}-brief-${date}.md`;
+    const blob=new Blob([brief+'\n'],{type:'text/markdown;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement('a');
+    link.href=url;
+    link.download=filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),0);
+    toast('会话 Brief 已下载');
+  }catch(e){
+    toast('下载 Brief 失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
 }
 function sessionTitle(s){
   return short(s.title||s.id||'新会话',42);
@@ -1524,7 +1630,7 @@ function renderChat(){
       ${renderContextPackPanel()}
     </aside>
     <section class="chat-stage">
-      <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">新对话</b></div><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div></div>
+      <div class="chat-stage-head"><div><span>Data Agent</span><b id="chatSessionTitle">新对话</b></div><div class="chat-stage-actions"><div class="tool-strip" id="toolMode"><button class="active" data-mode="auto" onclick="setToolMode('auto',this)">自动</button><button data-mode="analysis" onclick="setToolMode('analysis',this)">分析</button><button data-mode="sql" onclick="setToolMode('sql',this)">SQL</button><button data-mode="codex" onclick="setToolMode('codex',this)">Codex</button></div><div class="brief-strip" aria-label="会话 Brief 操作"><button onclick="writeChatBriefToCanvas(this)">生成 Brief</button><button onclick="copyChatBrief(this)">复制 Brief</button><button onclick="downloadChatBriefMarkdown(this)">下载 Brief</button></div></div></div>
       <div id="chatMessages" class="chat-thread">${chatEmptyState()}</div>
       <div class="composer-card">
         <div id="chatContextBar">${renderChatContextBar()}</div>
@@ -1548,6 +1654,7 @@ function renderChat(){
   </div>`;
   const router=agents.find(a=>a.id==='agent_router'); if(router) document.getElementById('chatAgent').value=router.id;
   syncChatContextBar();
+  syncChatBriefControls();
   refreshChatSessions().catch(()=>{document.getElementById('chatSessionList').innerHTML=emptyState('会话读取失败','仍可直接开始新对话。')});
 }
 function chatEmptyState(){
@@ -2402,6 +2509,7 @@ async function toggleChatSessionArchive(id,isArchived,btn){
 }
 function startNewChat(){
   activeSessionId='';
+  activeChatMessages=[];
   currentTrace=null;
   chatCanvasDraft='';
   chatCanvasVersions=[];
@@ -2410,6 +2518,7 @@ function startNewChat(){
   const box=document.getElementById('chatMessages'); if(box) box.innerHTML=chatEmptyState();
   const trace=document.getElementById('traceBox'); if(trace) trace.innerHTML=emptyState('暂无 Trace','发送问题后会显示执行状态、SQL、工具调用与步骤输出。');
   setChatCanvasDraft('','Canvas 已清空',{record:false});
+  syncChatBriefControls();
   renderSessionList();
   requestAnimationFrame(()=>document.getElementById('chatInput')?.focus());
 }
@@ -2426,7 +2535,9 @@ async function loadChatSession(id){
     const agentSelect=document.getElementById('chatAgent'); if(agentSelect&&session.agent_id) agentSelect.value=session.agent_id;
     syncChatContextBar();
     const messages=session.messages||[];
+    activeChatMessages=messages;
     if(box) box.innerHTML=messages.length?messages.map((m,i)=>chatMessageHtml(m,session.id,messages,i)).join(''):chatEmptyState();
+    syncChatBriefControls();
     const traceId=latestTraceId(messages);
     const trace=document.getElementById('traceBox');
     if(traceId){
@@ -2439,6 +2550,8 @@ async function loadChatSession(id){
     await refreshChatSessions();
     box?.scrollTo({top:box.scrollHeight});
   }catch(e){
+    activeChatMessages=[];
+    syncChatBriefControls();
     if(box) box.innerHTML=stateBanner('error','会话加载失败',e.message);
   }
 }
@@ -2660,6 +2773,8 @@ async function sendChat(btn){
   const box=document.getElementById('chatMessages');
   if(box.querySelector('.chat-welcome')) box.innerHTML='';
   box.innerHTML+=userMessageHtml(msg); input.value='';
+  activeChatMessages.push({role:'user',content:msg,content_type:'text',created_at:new Date().toISOString()});
+  syncChatBriefControls();
   const pendingId='pending-'+Date.now();
   box.innerHTML+=`<div id="${pendingId}" class="message assistant pending-message">${inlineLoading('Agent 正在路由和生成答案')}</div>`;
   try{
@@ -2668,6 +2783,8 @@ async function sendChat(btn){
     const title=document.getElementById('chatSessionTitle'); if(title) title.innerText=sessionTitle({title:msg});
     document.getElementById(pendingId)?.remove();
     box.innerHTML+=`<div class="message assistant rich-message">${resultHtml(r,{session_id:activeSessionId,trace_id:data.trace_id,question:msg})}</div>`;
+    activeChatMessages.push({role:'assistant',content:JSON.stringify(r),content_type:'agent_result',created_at:new Date().toISOString()});
+    syncChatBriefControls();
     await openTrace(data.trace_id);
     if(!chatCanvasValue().trim()) setChatCanvasDraft(chatCanvasTemplate('report'),'已根据本轮回答生成报告要点');
     await refreshChatSessions();
