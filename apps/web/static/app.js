@@ -714,6 +714,99 @@ function reportMarkdownFromAnswer(r,meta={}){
   lines.push('', '## Trace', r?.trace_id||meta.trace_id||'未返回 Trace');
   return lines.join('\n');
 }
+function answerFollowUpPrompts(r,meta={}){
+  const question=answerQuestion(meta);
+  const answer=short(r?.answer||r?.report_markdown||'当前回答',160);
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const prompts=[
+    {
+      label:'核对证据',
+      prompt:`基于上一轮问题“${question}”继续核对证据：请结合 Trace${traceId?` ${traceId}`:''}、SQL、权限检查和结果行数，说明哪些结论可靠、哪些需要复核。`
+    },
+    {
+      label:'继续下钻',
+      prompt:`围绕“${question}”继续下钻：请按时间、渠道、区域或客户分组拆解关键差异，并给出最值得追问的异常点。`
+    },
+    {
+      label:'转为行动',
+      prompt:`把上一轮回答“${answer}”转成可执行下一步：输出报告结构、风险提醒、负责人要确认的问题，以及是否需要深度研究或 Codex 任务。`
+    }
+  ];
+  (r?.next_actions||[]).slice(0,1).forEach(action=>{
+    prompts.unshift({
+      label:'执行建议',
+      prompt:`基于上一轮建议“${action}”继续推进：请说明执行路径、所需证据、风险边界和完成标准。`
+    });
+  });
+  return prompts.slice(0,3);
+}
+function answerFollowUpSuggestions(r,meta={}){
+  const prompts=answerFollowUpPrompts(r,meta);
+  if(!prompts.length) return '';
+  return `<div class="answer-followups" aria-label="建议追问"><span>继续问</span>${prompts.map(item=>`<button class="answer-suggestion" data-prompt="${esc(item.prompt)}" onclick="setChatComposerDraft(this.dataset.prompt)">${esc(item.label)}</button>`).join('')}</div>`;
+}
+function answerCanvasMarkdown(r,meta={}){
+  const question=answerQuestion(meta);
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const ctx=chatContextSnapshot();
+  const toolLabels={auto:'自动',analysis:'分析',sql:'SQL',codex:'Codex'};
+  const lines=[
+    `# 问数结论：${question}`,
+    '',
+    '## 会话上下文',
+    `- Agent：${ctx.agent?.name||ctx.agent?.id||'自动路由'}`,
+    `- 数据集：${ctx.dataset?.name||'自动选择'}`,
+    `- 工具模式：${toolLabels[ctx.toolMode]||displayValue(ctx.toolMode||'auto')}`,
+    `- 证据：${traceId||'未返回 Trace'}`,
+    '',
+    '## 回答',
+    r?.answer||'暂无回答正文'
+  ];
+  if(r?.report_markdown) lines.push('', '## 报告草稿', r.report_markdown);
+  if((r?.warnings||[]).length) lines.push('', '## 注意事项', ...(r.warnings||[]).map(w=>`- ${w}`));
+  if((r?.tables||[]).length){
+    lines.push('', '## 数据结果');
+    (r.tables||[]).forEach((t,i)=>lines.push(`- 表格 ${i+1}：${t.name||'query_result'}，${(t.rows||[]).length} 行，字段 ${(t.columns||Object.keys((t.rows||[])[0]||{})).join('、')||'-'}`));
+  }
+  if((r?.charts||[]).length){
+    lines.push('', '## 图表');
+    (r.charts||[]).forEach((c,i)=>lines.push(`- 图表 ${i+1}：${c.title||c.chart_type||'chart'} (${c.chart_type||'-'})`));
+  }
+  const followUps=answerFollowUpPrompts(r,meta);
+  if((r?.next_actions||[]).length||followUps.length){
+    lines.push('', '## 下一步');
+    (r?.next_actions||[]).forEach(a=>lines.push(`- ${a}`));
+    followUps.forEach(item=>lines.push(`- ${item.label}：${item.prompt}`));
+  }
+  lines.push('', '## 审计与边界', '- 保存报告或创建任务前继续保留 Trace、RBAC、SQL Guard 和审计链路。');
+  return lines.join('\n');
+}
+function answerNextStepsMarkdown(r,meta={}){
+  const question=answerQuestion(meta);
+  const traceId=r?.trace_id||meta.trace_id||'';
+  const actions=(r?.next_actions||[]).length ? r.next_actions : answerFollowUpPrompts(r,meta).map(item=>item.prompt);
+  return [`# 下一步：${question}`,'',`- Trace：${traceId||'待复核'}`,'- 目标：把当前回答转为可验证的业务动作或工程任务。','', '## 建议动作', ...actions.map(a=>`- ${a}`), '', '## 完成标准', '- 结论能回到 SQL、权限检查、结果行数和 Trace 步骤。', '- 风险、数据分级和 masking 边界已注明。', '- 需要工程改动时进入 Codex 审批流程。'].join('\n');
+}
+function focusChatCanvas(){
+  requestAnimationFrame(()=>{
+    const el=document.getElementById('chatCanvasDraft');
+    if(!el) return;
+    el.focus();
+    const end=el.value.length;
+    el.setSelectionRange(end,end);
+  });
+}
+function writeAnswerToCanvas(key,mode='replace'){
+  const cached=answerDraftCache[key];
+  if(!cached) return toast('回答上下文已失效，请重新打开会话');
+  const {r,meta}=cached;
+  const markdown=mode==='next' ? answerNextStepsMarkdown(r,meta) : answerCanvasMarkdown(r,meta);
+  const existing=chatCanvasValue().trim();
+  const next=mode==='append'&&existing ? `${existing}\n\n---\n\n${markdown}` : markdown;
+  const status=mode==='append'?'回答已追加到 Canvas':mode==='next'?'下一步已写入 Canvas':'回答已写入 Canvas';
+  setChatCanvasDraft(next,status,{reason:status});
+  focusChatCanvas();
+}
 function reportEvidenceFromAnswer(r,meta={}){
   return [{
     type:'chat_answer',
@@ -761,6 +854,9 @@ function answerContextActions(r, meta={}, key=''){
   const copyText=answerPlainText(r);
   const actions=[
     `<button class="answer-tool" data-prompt="${esc(followUp)}" onclick="setChatComposerDraft(this.dataset.prompt)">继续追问</button>`,
+    key?`<button class="answer-tool" onclick="writeAnswerToCanvas('${jsArg(key)}','replace')">写入 Canvas</button>`:'',
+    key?`<button class="answer-tool" onclick="writeAnswerToCanvas('${jsArg(key)}','append')">追加 Canvas</button>`:'',
+    key?`<button class="answer-tool" onclick="writeAnswerToCanvas('${jsArg(key)}','next')">提取下一步</button>`:'',
     `<button class="answer-tool" data-prompt="${esc(research)}" onclick="setAnalysisDraft(this.dataset.prompt,'agent_business_analysis')">转深度研究</button>`,
     `<button class="answer-tool" data-title="优化问数工作流" data-prompt="${esc(codexPrompt)}" onclick="setCodexDraft(this.dataset.title,this.dataset.prompt)">创建 Codex 任务</button>`,
     key?`<button class="answer-tool" onclick="saveAnswerAsReport('${jsArg(key)}',this)">保存报告</button>`:'',
@@ -857,6 +953,7 @@ function resultHtml(r, meta={}){
   ${answerBrief(r,meta)}
   ${answerContextActions(r,meta,answerKey)}
   ${evidenceLinks(r,meta)}
+  ${answerFollowUpSuggestions(r,meta)}
   ${r.report_markdown?`<div class="report">${esc(r.report_markdown)}</div>`:''}
   ${r.codex_task?`<div class="code">Codex Task: ${esc(r.codex_task.id)} / ${esc(r.codex_task.status)} / ${esc(r.codex_task.mode)}</div>`:''}
   ${(r.warnings||[]).map(w=>`<div class="status-warn">${esc(w)}</div>`).join('')}
