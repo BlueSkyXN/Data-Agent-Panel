@@ -949,6 +949,34 @@ function latestTraceId(messages=[]){
   }
   return '';
 }
+function questionCanvasMarkdown(text){
+  const ctx=chatContextSnapshot();
+  const question=String(text||'').trim();
+  return [`# 提问草稿：${question||'当前问题'}`,'',`- Agent：${ctx.agent?.name||ctx.agent?.id||'自动路由'}`,`- 数据集：${ctx.dataset?.name||'自动选择'}`,`- 工具模式：${displayValue(ctx.toolMode||'auto')}`,'', '## 复用意图', question||'待补充问题', '', '## 继续方向', '- 编辑后重新发送，或转为深度研究 / Codex 任务。', '- 若涉及 SQL，继续通过 SQL Guard、RBAC、Trace 和审计链路验证。'].join('\n');
+}
+function writeQuestionToCanvas(text,mode='append'){
+  const markdown=questionCanvasMarkdown(text);
+  const existing=chatCanvasValue().trim();
+  const next=mode==='append'&&existing ? `${existing}\n\n---\n\n${markdown}` : markdown;
+  setChatCanvasDraft(next,mode==='append'?'问题已追加到 Canvas':'问题已写入 Canvas',{reason:'问题写入 Canvas'});
+  focusChatCanvas();
+}
+function rerunUserQuestion(prompt,btn){
+  setChatComposerDraft(prompt);
+  requestAnimationFrame(()=>sendChat(btn));
+}
+function userMessageActions(text){
+  const prompt=String(text||'');
+  return `<div class="message-actions" aria-label="用户消息操作">
+    <button data-prompt="${esc(prompt)}" onclick="setChatComposerDraft(this.dataset.prompt)">编辑</button>
+    <button data-prompt="${esc(prompt)}" onclick="rerunUserQuestion(this.dataset.prompt,this)">重问</button>
+    <button data-prompt="${esc(prompt)}" onclick="writeQuestionToCanvas(this.dataset.prompt,'append')">写入 Canvas</button>
+    <button data-copy="${esc(prompt)}" onclick="copyAnswerText(this.dataset.copy,this)">复制</button>
+  </div>`;
+}
+function userMessageHtml(content){
+  return `<div class="message user"><div>${esc(content)}</div>${userMessageActions(content)}</div>`;
+}
 function resultHtml(r, meta={}){
   const answerKey=cacheAnswerDraft(r,meta);
   return `<div class="answer-title">${tag('Agent Response','green')}<b>${esc(r.answer||'已返回结果')}</b>${traceButton(r.trace_id||meta.trace_id)}</div>
@@ -971,7 +999,7 @@ function previousUserMessage(messages=[],index=0){
   return '';
 }
 function chatMessageHtml(message, sessionId='', messages=[], index=0){
-  if(message.role==='user') return `<div class="message user">${esc(message.content)}</div>`;
+  if(message.role==='user') return userMessageHtml(message.content);
   const parsed=message.content_type==='agent_result'?parseJsonMaybe(message.content):null;
   return `<div class="message assistant rich-message">${parsed?resultHtml(parsed,{session_id:sessionId,message_id:message.id,trace_id:parsed.trace_id,question:previousUserMessage(messages,index)}):esc(message.content)}</div>`;
 }
@@ -2509,7 +2537,7 @@ async function sendChat(btn){
   input.disabled=true;
   const box=document.getElementById('chatMessages');
   if(box.querySelector('.chat-welcome')) box.innerHTML='';
-  box.innerHTML+=`<div class="message user">${esc(msg)}</div>`; input.value='';
+  box.innerHTML+=userMessageHtml(msg); input.value='';
   const pendingId='pending-'+Date.now();
   box.innerHTML+=`<div id="${pendingId}" class="message assistant pending-message">${inlineLoading('Agent 正在路由和生成答案')}</div>`;
   try{
