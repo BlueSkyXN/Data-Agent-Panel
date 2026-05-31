@@ -39,6 +39,7 @@ let reportsCache = [];
 let reportFilterState = {q:'', status:'all', type:'all'};
 let activeReportId = '';
 let commandAssetsLoaded = false;
+let contextPackAssetFilterState = {q:'', type:'all'};
 const CONTEXT_PACK_STORAGE_KEY = 'dap_context_pack_v1';
 let contextPack = loadContextPack();
 
@@ -137,7 +138,7 @@ function compactTags(values,limit=4){
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
 }
 function defaultContextPack(){
-  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],reportIds:[],traceIds:[],sessionId:'',toolMode:'auto',evidenceDepth:'standard',updatedAt:''};
+  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',toolMode:'auto',evidenceDepth:'standard',updatedAt:''};
 }
 function normalizeIdList(list,limit=6){
   return [...new Set(asList(list).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,limit);
@@ -149,6 +150,7 @@ function normalizeContextPack(pack={}){
   next.instructions=String(next.instructions||'').slice(0,1200);
   next.agentId=String(next.agentId||'').slice(0,80);
   next.datasetIds=normalizeIdList(next.datasetIds,6);
+  next.knowledgeBaseIds=normalizeIdList(next.knowledgeBaseIds,6);
   next.reportIds=normalizeIdList(next.reportIds,4);
   next.traceIds=normalizeIdList(next.traceIds,6);
   next.sessionId=String(next.sessionId||'').slice(0,90);
@@ -167,7 +169,7 @@ function loadContextPack(){
 }
 function contextPackHasContent(pack=contextPack){
   const p=normalizeContextPack(pack);
-  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.reportIds.length||p.traceIds.length||p.sessionId);
+  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionId);
 }
 function asList(value){
   if(Array.isArray(value)) return value;
@@ -184,6 +186,7 @@ function assetName(list,id,fallback='-'){
 }
 function datasetName(id){return assetName(datasets,id,id||'-')}
 function metricName(id){return assetName(metrics,id,id||'-')}
+function knowledgeBaseName(id){return assetName(knowledgeBasesCache,id,id||'-')}
 function cellHtml(key,value){
   if(value===null || value===undefined || value==='') return '<span class="muted">-</span>';
   if(['status','risk','risk_level','severity','mode','data_classification','refresh_mode'].includes(key)) return statusTag(value);
@@ -1074,6 +1077,11 @@ function openReportCommand(reportId){
   showPage('reports');
   setTimeout(()=>openReportDetail(reportId,null),180);
 }
+function openKnowledgeCommand(kbId){
+  knowledgeFilterState={q:'',backend:'all',type:'all'};
+  showPage('knowledge');
+  setTimeout(()=>selectKnowledgeBase(kbId),180);
+}
 function openSessionCommand(sessionId){
   showPage('chat');
   setTimeout(()=>loadChatSession(sessionId),180);
@@ -1085,6 +1093,7 @@ function buildCommandItems(q){
   items.push(...agents.map(a=>({kind:'agent',title:a.name,description:`试用 ${displayValue(a.type)} · ${displayValue(a.risk_level||'low')}`,keywords:[a.id,a.type,a.description,a.adapter_id].join(' '),run:()=>openAgentCommand(a.id)})));
   items.push(...datasets.map(d=>({kind:'dataset',title:d.name,description:`打开数据画像 · ${d.physical_table||d.id}`,keywords:[d.id,d.business_domain,d.description,d.data_classification].join(' '),run:()=>openDatasetCommand(d.id)})));
   items.push(...metrics.map(m=>({kind:'metric',title:m.name,description:`解释指标口径 · ${m.code||m.id}`,keywords:[m.id,m.code,m.formula,m.dataset_id].join(' '),run:()=>openMetricCommand(m)})));
+  items.push(...knowledgeBasesCache.slice(0,80).map(k=>({kind:'knowledge',title:k.name||k.id,description:`打开知识库 · ${displayValue(k.backend_type||'mock')} · ${displayValue(k.type||'document')}`,keywords:[k.id,k.name,k.backend_type,k.type,k.adapter_id,k.description].join(' '),run:()=>openKnowledgeCommand(k.id)})));
   items.push(...reportsCache.slice(0,80).map(r=>({kind:'report_asset',title:r.title||r.id,description:`打开报告 Canvas · ${reportTypeLabel(r.report_type)} · ${displayValue(r.status||'draft')}`,keywords:[r.id,r.report_type,r.status,r.owner_id,r.agent_id,r.created_at,r.updated_at].join(' '),run:()=>openReportCommand(r.id)})));
   items.push(...chatSessions.slice(0,80).map(s=>({kind:'session',title:sessionTitle(s),description:`恢复会话 · ${displayValue(s.status||'active')} · ${timeText(s.updated_at)}`,keywords:[s.id,s.title,s.agent_id,s.status,s.created_at,s.updated_at].join(' '),run:()=>openSessionCommand(s.id)})));
   const prompts=['本月收入最高的渠道有哪些？','按区域统计本月收入','客户工单根因分布是什么？','解释收入指标口径','给我生成一个经营总览面板','帮我创建一个 Codex 任务，开发面板导出功能'];
@@ -1444,6 +1453,7 @@ function contextPackCounts(){
   const p=normalizeContextPack(contextPack);
   return {
     datasets:p.datasetIds.length,
+    knowledge:p.knowledgeBaseIds.length,
     reports:p.reportIds.length,
     traces:p.traceIds.length,
     instructions:p.instructions.trim()?1:0
@@ -1451,7 +1461,7 @@ function contextPackCounts(){
 }
 function contextPackSummaryLabel(){
   const counts=contextPackCounts();
-  const total=counts.datasets+counts.reports+counts.traces+counts.instructions+(contextPack.agentId?1:0)+(contextPack.sessionId?1:0);
+  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.instructions+(contextPack.agentId?1:0)+(contextPack.sessionId?1:0);
   return total?`${total} 项上下文`:'未捕获';
 }
 function contextPackSummaryDetail(){
@@ -1460,6 +1470,7 @@ function contextPackSummaryDetail(){
   if(counts.instructions) parts.push('指令');
   if(contextPack.agentId) parts.push('Agent');
   if(counts.datasets) parts.push(`${counts.datasets} 数据集`);
+  if(counts.knowledge) parts.push(`${counts.knowledge} 知识库`);
   if(counts.reports) parts.push(`${counts.reports} 报告`);
   if(counts.traces) parts.push(`${counts.traces} Trace`);
   if(contextPack.sessionId) parts.push('会话');
@@ -1477,13 +1488,81 @@ function contextPackPills(){
   const pills=[];
   if(p.agentId) pills.push(['Agent',contextPackAgentName()]);
   p.datasetIds.forEach(id=>pills.push(['数据集',datasetName(id)]));
+  p.knowledgeBaseIds.forEach(id=>pills.push(['知识库',knowledgeBaseName(id)]));
   p.reportIds.forEach(id=>pills.push(['报告',contextPackReportTitle(id)]));
   p.traceIds.forEach(id=>pills.push(['Trace',id]));
   if(p.sessionId) pills.push(['会话',p.sessionId]);
-  return pills.length?`<div class="context-pack-pills">${pills.map(([label,value])=>`<span><small>${esc(label)}</small><b>${esc(short(value,34))}</b></span>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话后，这里会显示 Agent、数据集、Trace、报告和会话线索。</p>`;
+  return pills.length?`<div class="context-pack-pills">${pills.map(([label,value])=>`<span><small>${esc(label)}</small><b>${esc(short(value,34))}</b></span>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话或添加资产后，这里会显示 Agent、数据集、知识库、Trace、报告和会话线索。</p>`;
 }
 function contextPackStatusText(){
   return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
+}
+function contextPackAssetItems(){
+  const q=(contextPackAssetFilterState.q||'').trim().toLowerCase();
+  const type=contextPackAssetFilterState.type||'all';
+  const items=[
+    ...datasets.map(d=>({
+      kind:'dataset',
+      label:'数据集',
+      id:d.id,
+      title:d.name||d.id,
+      detail:[d.business_domain,d.physical_table,displayValue(d.data_classification||'internal')].filter(Boolean).join(' · '),
+      keywords:[d.id,d.name,d.physical_table,d.business_domain,d.description,d.data_classification].join(' ')
+    })),
+    ...knowledgeBasesCache.map(k=>({
+      kind:'knowledge',
+      label:'知识库',
+      id:k.id,
+      title:k.name||k.id,
+      detail:[displayValue(k.backend_type||'mock'),displayValue(k.type||'document'),k.adapter_id].filter(Boolean).join(' · '),
+      keywords:[k.id,k.name,k.backend_type,k.type,k.adapter_id,k.description].join(' ')
+    })),
+    ...reportsCache.slice(0,80).map(r=>({
+      kind:'report',
+      label:'报告',
+      id:r.id,
+      title:r.title||r.id,
+      detail:[reportTypeLabel(r.report_type),displayValue(r.status||'draft'),timeText(r.updated_at||r.created_at)].filter(Boolean).join(' · '),
+      keywords:[r.id,r.title,r.report_type,r.status,r.owner_id,r.agent_id,r.created_at,r.updated_at].join(' ')
+    }))
+  ];
+  return items
+    .filter(item=>(type==='all'||item.kind===type)&&(!q||[item.id,item.title,item.detail,item.keywords].join(' ').toLowerCase().includes(q)))
+    .slice(0,8);
+}
+function contextPackAssetInPack(kind,id,pack=normalizeContextPack(contextPack)){
+  if(kind==='dataset') return pack.datasetIds.includes(id);
+  if(kind==='knowledge') return pack.knowledgeBaseIds.includes(id);
+  if(kind==='report') return pack.reportIds.includes(id);
+  return false;
+}
+function contextPackAssetListHtml(){
+  const items=contextPackAssetItems();
+  const pack=normalizeContextPack(contextPack);
+  if(!items.length) return emptyState('没有匹配资产','换一个关键词或资产类型。');
+  return `<div class="context-asset-list">${items.map(item=>{
+    const selected=contextPackAssetInPack(item.kind,item.id,pack);
+    return `<article class="context-asset-item ${selected?'selected':''}">
+      <div><small>${esc(item.label)}</small><b>${esc(short(item.title,38))}</b><span>${esc(short(item.detail||item.id,54))}</span></div>
+      <button class="report-action ${selected?'muted-action':''}" ${selected?'disabled':''} onclick="addContextAssetToPack('${jsArg(item.kind)}','${jsArg(item.id)}',this)">${selected?'已加入':'加入'}</button>
+    </article>`;
+  }).join('')}</div>`;
+}
+function renderContextPackAssetPicker(){
+  const type=contextPackAssetFilterState.type||'all';
+  return `<div class="context-pack-picker">
+    <div class="context-pack-filter">
+      <label><span>资产</span><input id="contextPackAssetSearch" value="${esc(contextPackAssetFilterState.q||'')}" placeholder="搜索数据集、知识库、报告" oninput="contextPackAssetFilterState.q=this.value;renderContextPackAssetList()"/></label>
+      <label><span>类型</span><select id="contextPackAssetType" onchange="contextPackAssetFilterState.type=this.value;renderContextPackAssetList()">
+        ${[['all','全部'],['dataset','数据集'],['knowledge','知识库'],['report','报告']].map(([value,label])=>`<option value="${value}" ${type===value?'selected':''}>${label}</option>`).join('')}
+      </select></label>
+    </div>
+    <div id="contextPackAssetList">${contextPackAssetListHtml()}</div>
+  </div>`;
+}
+function renderContextPackAssetList(){
+  const list=document.getElementById('contextPackAssetList');
+  if(list) list.innerHTML=contextPackAssetListHtml();
 }
 function renderContextPackPanel(){
   const active=contextPackHasContent();
@@ -1492,6 +1571,7 @@ function renderContextPackPanel(){
     <label class="field-label" for="contextPackInstructions">工作指令</label>
     <textarea id="contextPackInstructions" rows="4" placeholder="写下这组工作要长期遵循的口径、范围或偏好。" oninput="updateContextPackInstructions(this.value)">${esc(contextPack.instructions)}</textarea>
     ${contextPackPills()}
+    ${renderContextPackAssetPicker()}
     <div class="context-pack-actions">
       <button class="report-action" onclick="captureContextPack()">捕获当前</button>
       <button class="report-action" onclick="applyContextPackToChat()">应用</button>
@@ -1554,6 +1634,19 @@ function addReportToContextPack(reportId,btn){
   persistContextPack({toast:'报告已加入工作包'});
   setBusy(btn,false);
 }
+function addKnowledgeToContextPack(knowledgeBaseId,btn){
+  if(!knowledgeBaseId) return;
+  setBusy(btn,true);
+  contextPack.knowledgeBaseIds=normalizeIdList([knowledgeBaseId,...contextPack.knowledgeBaseIds],6);
+  contextPack.updatedAt=new Date().toISOString();
+  persistContextPack({toast:'知识库已加入工作包'});
+  setBusy(btn,false);
+}
+function addContextAssetToPack(kind,id,btn){
+  if(kind==='dataset') return addDatasetToContextPack(id,btn);
+  if(kind==='knowledge') return addKnowledgeToContextPack(id,btn);
+  if(kind==='report') return addReportToContextPack(id,btn);
+}
 function addTraceToContextPack(traceId,btn){
   if(!traceId) return;
   setBusy(btn,true);
@@ -1577,6 +1670,7 @@ function contextPackPrompt(){
   if(p.instructions.trim()) lines.push('', `工作指令：${p.instructions.trim()}`);
   if(p.agentId) lines.push(`Agent：${contextPackAgentName()||p.agentId}`);
   if(p.datasetIds.length) lines.push(`数据集：${p.datasetIds.map(datasetName).join('、')}`);
+  if(p.knowledgeBaseIds.length) lines.push(`知识库：${p.knowledgeBaseIds.map(knowledgeBaseName).join('、')}`);
   if(p.reportIds.length) lines.push(`报告：${p.reportIds.map(id=>short(contextPackReportTitle(id),42)).join('、')}`);
   if(p.traceIds.length) lines.push(`Trace：${p.traceIds.join('、')}`);
   if(p.sessionId) lines.push(`来源会话：${p.sessionId}`);
@@ -1589,6 +1683,7 @@ function contextPackCanvasMarkdown(){
   if(p.instructions.trim()) lines.push('## 工作指令',p.instructions.trim(),'');
   if(p.agentId) lines.push('## Agent',`- ${contextPackAgentName()||p.agentId}`,'');
   if(p.datasetIds.length) lines.push('## 数据集',...p.datasetIds.map(id=>`- ${datasetName(id)} (${id})`),'');
+  if(p.knowledgeBaseIds.length) lines.push('## 知识库',...p.knowledgeBaseIds.map(id=>`- ${knowledgeBaseName(id)} (${id})`),'');
   if(p.reportIds.length) lines.push('## 报告',...p.reportIds.map(id=>`- ${contextPackReportTitle(id)} (${id})`),'');
   if(p.traceIds.length) lines.push('## Trace',...p.traceIds.map(id=>`- ${id}`),'');
   if(p.sessionId) lines.push('## 来源会话',`- ${p.sessionId}`,'');
@@ -1601,6 +1696,7 @@ function contextPackPayload(){
     instructions:p.instructions,
     agent_id:p.agentId||null,
     dataset_ids:p.datasetIds,
+    knowledge_base_ids:p.knowledgeBaseIds,
     report_ids:p.reportIds,
     trace_ids:p.traceIds,
     session_id:p.sessionId||null,
@@ -1940,12 +2036,14 @@ async function refreshChatSessions(){
   renderSessionList();
 }
 async function refreshCommandAssets(){
-  const [sessions,reports]=await Promise.all([
+  const [sessions,reports,knowledgeBases]=await Promise.all([
     api('/api/sessions').catch(()=>chatSessions),
-    api('/api/reports').catch(()=>reportsCache)
+    api('/api/reports').catch(()=>reportsCache),
+    api('/api/knowledge-bases').catch(()=>knowledgeBasesCache)
   ]);
   chatSessions=sessions||[];
   reportsCache=reports||[];
+  knowledgeBasesCache=knowledgeBases||[];
   commandAssetsLoaded=true;
 }
 async function updateChatSession(id,payload,btn){
@@ -2946,6 +3044,7 @@ function knowledgeDetailHtml(kb,versions=[]){
   const actions=contextActionStrip([
     {label:'用知识库提问',onclick:`setChatDraft('${jsArg(`基于知识库“${kbName}”回答：请说明它适合支撑哪些业务问题，并给出可追问方向。`)}','${jsArg(preferredAgent)}')`},
     {label:'查看语义资产',onclick:`openSemanticFiltered('${jsArg(kbName)}','')`},
+    {label:'加入工作包',onclick:`addKnowledgeToContextPack('${jsArg(kb.id)}',this)`},
     {label:'查看审计',onclick:`openAuditFiltered('${jsArg(kb.id)}')`},
     {label:'创建接入任务',onclick:`setCodexDraft('${jsArg(`完善知识库接入：${kbName}`)}','${jsArg(`检查知识库 ${kb.id} 的 Adapter 绑定、版本展示、Agent 引用和审计链路，保持权限、Trace 和外部知识源边界不退化。`)}')`}
   ]);

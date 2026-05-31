@@ -624,6 +624,19 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .context-pack-pills small{font-size:10px;color:#7d786d;font-weight:900;text-transform:uppercase}
 .context-pack-pills b{font-size:12px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .context-pack-empty{margin:0;color:#7d786d;font-size:12px;line-height:1.45}
+.context-pack-picker{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:9px}
+.context-pack-filter{display:grid;grid-template-columns:minmax(0,1fr) 92px;gap:7px;align-items:end}
+.context-pack-filter label{display:grid;gap:4px;min-width:0}
+.context-pack-filter span{color:#7d786d;font-size:10px;font-weight:900;text-transform:uppercase}
+.context-pack-filter input,.context-pack-filter select{min-height:34px;border-radius:12px;font-size:12px;background:#fff}
+.context-asset-list{display:grid;gap:6px;max-height:282px;overflow:auto;padding-right:2px}
+.context-asset-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;background:#fff;border:1px solid var(--line);border-radius:13px;padding:8px;min-width:0}
+.context-asset-item.selected{background:#f6fbf7;border-color:#cfe8dc}
+.context-asset-item div{display:grid;gap:2px;min-width:0}
+.context-asset-item small{color:#7d786d;font-size:10px;font-weight:900;text-transform:uppercase}
+.context-asset-item b{font-size:12px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.context-asset-item span{color:#6b6b62;font-size:11px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.context-asset-item .report-action{min-width:58px;padding:6px 8px;font-size:11px}
 .context-pack-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 .context-pack-actions .report-action{min-width:0;padding:7px 8px;border-radius:999px;font-size:12px}
 .context-pack-status{color:#7d786d;line-height:1.4}
@@ -700,6 +713,9 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
   .chat-context-bar{grid-template-columns:1fr}
   .composer-tools{grid-template-columns:1fr}
   .context-pack-actions{grid-template-columns:1fr 1fr}
+  .context-pack-filter{grid-template-columns:1fr}
+  .context-asset-item{grid-template-columns:1fr}
+  .context-asset-item .report-action{width:100%}
   .canvas-select-tools{grid-template-columns:1fr 1fr}
   .canvas-select-tools span{grid-column:1 / -1;white-space:normal}
   .canvas-actions{grid-template-columns:1fr 1fr}
