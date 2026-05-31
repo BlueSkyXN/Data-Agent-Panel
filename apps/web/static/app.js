@@ -1982,6 +1982,7 @@ function renderChatCanvas(){
         <button class="report-action" title="斜体" aria-label="斜体选区" onclick="formatChatCanvasSelection('italic')"><i>I</i></button>
         <button class="report-action" title="二级标题" aria-label="设置为二级标题" onclick="formatChatCanvasSelection('heading')">H2</button>
         <button class="report-action" title="项目列表" aria-label="设置为项目列表" onclick="formatChatCanvasSelection('bullet')">•</button>
+        <button class="report-action" title="编号列表" aria-label="设置为编号列表" onclick="formatChatCanvasSelection('numbered')">1.</button>
       </div>
       <button class="report-action" onclick="runChatCanvasEdit('polish')">润色选区</button>
       <button class="report-action" onclick="runChatCanvasEdit('evidence')">补证据</button>
@@ -1995,6 +1996,7 @@ function renderChatCanvas(){
       <button class="report-action" onclick="runChatCanvasAction('report')">报告要点</button>
       <button class="report-action" onclick="runChatCanvasAction('trace')">附加 Trace</button>
       <button class="report-action" onclick="saveChatCanvasAsReport(this)">保存报告</button>
+      <button class="report-action" onclick="downloadChatCanvasMarkdown(this)">下载 Markdown</button>
       <button class="report-action ghost-tool" onclick="copyChatCanvas(this)">复制</button>
     </div>
     <div id="chatCanvasVersionBar">${renderChatCanvasVersionBar()}</div>
@@ -2138,13 +2140,13 @@ function replaceChatCanvasRange(start,end,nextText,status,selectionStart=0,selec
   });
 }
 function markdownLineFormat(text,kind){
-  const prefix=kind==='heading'?'## ':'- ';
+  let number=1;
   return String(text||'').split('\n').map(line=>{
     if(!line.trim()) return line;
-    const clean=kind==='heading'
-      ? line.replace(/^\s*#{1,6}\s*/,'')
-      : line.replace(/^\s*[-*]\s+/,'');
-    return prefix+clean.trimStart();
+    const clean=line.replace(/^\s*(#{1,6}\s+|[-*]\s+|\d+\.\s+)/,'').trimStart();
+    if(kind==='heading') return `## ${clean}`;
+    if(kind==='numbered') return `${number++}. ${clean}`;
+    return `- ${clean}`;
   }).join('\n');
 }
 function formatChatCanvasSelection(kind){
@@ -2165,10 +2167,12 @@ function formatChatCanvasSelection(kind){
     replaceChatCanvasRange(start,end,next,spec.status,spec.open.length,spec.open.length+body.length);
     return;
   }
-  if(kind==='heading'||kind==='bullet'){
-    const body=selected||'小节标题';
+  if(kind==='heading'||kind==='bullet'||kind==='numbered'){
+    const placeholders={heading:'小节标题',bullet:'列表项',numbered:'列表项'};
+    const statuses={heading:'Canvas 已设为标题',bullet:'Canvas 已设为项目列表',numbered:'Canvas 已设为编号列表'};
+    const body=selected||placeholders[kind]||'列表项';
     const next=markdownLineFormat(body,kind);
-    replaceChatCanvasRange(start,end,next,kind==='heading'?'Canvas 已设为标题':'Canvas 已设为列表',0,next.length);
+    replaceChatCanvasRange(start,end,next,statuses[kind]||'Canvas 已格式化',0,next.length);
   }
 }
 function polishedCanvasText(text){
@@ -2277,6 +2281,35 @@ function copyChatCanvas(btn){
   const text=chatCanvasValue().trim();
   if(!text) return toast('Canvas 为空');
   return copyAnswerText(text,btn);
+}
+function safeDownloadStem(text,fallback='chat-canvas'){
+  const stem=String(text||'').trim().replace(/[\\/:*?"<>|\s]+/g,'-').replace(/^-+|-+$/g,'').slice(0,56);
+  return stem || fallback;
+}
+function downloadChatCanvasMarkdown(btn){
+  const text=chatCanvasValue().trim();
+  if(!text) return toast('Canvas 为空');
+  setBusy(btn,true);
+  try{
+    const date=new Date().toISOString().slice(0,10);
+    const filename=`${safeDownloadStem(chatCanvasContext().question)}-${date}.md`;
+    const blob=new Blob([text+'\n'],{type:'text/markdown;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement('a');
+    link.href=url;
+    link.download=filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),0);
+    const status=document.getElementById('chatCanvasStatus');
+    if(status) status.innerText=`已下载 ${filename}`;
+    toast('Canvas 已下载为 Markdown');
+  }catch(e){
+    toast('下载失败：'+e.message);
+  }finally{
+    setBusy(btn,false);
+  }
 }
 function selectedChatContext(){
   const base={

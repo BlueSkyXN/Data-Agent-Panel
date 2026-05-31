@@ -702,7 +702,7 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .canvas-select-tools{display:grid;grid-template-columns:minmax(0,1fr) auto repeat(5,auto);gap:7px;align-items:center;background:#fbfaf7;border:1px solid var(--line);border-radius:14px;padding:8px}
 .canvas-select-tools span{color:#7d786d;font-size:12px;line-height:1.35;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .canvas-select-tools .report-action{min-width:0;padding:7px 9px;border-radius:999px;font-size:12px;white-space:nowrap}
-.canvas-format-tools{display:flex;gap:4px;align-items:center;padding-right:7px;border-right:1px solid var(--line)}
+.canvas-format-tools{display:flex;gap:4px;align-items:center;flex-wrap:wrap;padding-right:7px;border-right:1px solid var(--line)}
 .canvas-format-tools .report-action{min-width:30px;padding:7px 8px;font-weight:900}
 .canvas-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
 .canvas-actions .report-action{min-width:0;padding:7px 8px;border-radius:999px;font-size:12px}
