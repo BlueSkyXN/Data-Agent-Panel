@@ -34,6 +34,24 @@ def _context_pack_local_file_summary(context: dict | None) -> list[dict]:
     return summary
 
 
+def _context_pack_saved_note_summary(context: dict | None) -> list[dict]:
+    context_pack = (context or {}).get("context_pack") or {}
+    notes = context_pack.get("saved_notes") or []
+    summary = []
+    for item in notes[:8]:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "")
+        summary.append({
+            "id": str(item.get("id") or "")[:90],
+            "title": str(item.get("title") or "回答摘录")[:120],
+            "source": str(item.get("source") or "")[:40],
+            "trace_id": str(item.get("trace_id") or "")[:90],
+            "content_chars": len(content),
+        })
+    return summary
+
+
 @router.post("/query")
 def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current_user)):
     check_rate_limit(f"chat:{user['id']}", settings.chat_rate_limit_per_minute)
@@ -68,6 +86,15 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
             "local_file_context",
             {"local_files_count": len(local_file_summary), "has_local_file_content": True},
             {"local_files": local_file_summary, "temporary_chat": temporary_chat},
+        )
+    saved_note_summary = _context_pack_saved_note_summary(payload.context)
+    if saved_note_summary:
+        trace_service.add_step(
+            trace_id,
+            "context_pack",
+            "saved_note_context",
+            {"saved_notes_count": len(saved_note_summary), "has_saved_note_content": True},
+            {"saved_notes": saved_note_summary, "temporary_chat": temporary_chat},
         )
     start = time.time()
     try:
