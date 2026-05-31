@@ -241,6 +241,9 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .research-playbook{background:linear-gradient(180deg,#fff,#f8fbff)}
 .timeline.static .timeline-item{padding:8px;border:1px solid var(--line);border-radius:var(--radius);background:#fff}
 .panel-toolbar{display:grid;grid-template-columns:minmax(240px,1fr) auto auto;gap:10px;align-items:center;margin-bottom:14px}
+.panel-builder-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
+.panel-builder-card{background:rgba(255,255,255,.78);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px;min-width:0}
+.panel-builder-card textarea{min-height:96px}
 .panel-shell{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow)}
 .panel-title{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:14px}
 .panel-title h2{margin:0 0 4px;font-size:24px}
@@ -354,6 +357,12 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .knowledge-meta,.eval-tags{display:flex;gap:6px;flex-wrap:wrap}
 .knowledge-detail h4{margin:14px 0 8px}
 .eval-runner{align-self:start}
+.eval-workstation{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(340px,.75fr);gap:14px;align-items:start}
+.eval-side{display:grid;gap:14px;align-content:start;min-width:0}
+.eval-card{display:block;width:100%;text-align:left;color:#1f2937;cursor:pointer}
+.eval-card:hover,.eval-card.active{background:#f5f4ef;border-color:#cfcac0;filter:none;transform:none}
+.eval-create-card textarea{min-height:88px}
+.eval-case-preview{background:#fbfaf7;border:1px solid var(--line);border-radius:var(--radius);padding:14px;min-width:0}
 .eval-run-shell{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,.85fr);gap:14px;margin-top:12px}
 .eval-run-main,.eval-trace-drawer{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:14px;box-shadow:0 8px 18px rgba(17,24,39,.04);min-width:0}
 .eval-trace-drawer{max-height:680px;overflow:auto}
@@ -385,7 +394,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-vis
 .audit-detail details{margin-top:10px}
 .audit-trace-shell .trace-drawer-inline{max-height:620px}
 @media(max-width:1180px){
-  .dashboard-hero,.dashboard-composer-row,.workbench-layout,.data-catalog-workspace,.dataops-trace-layout,.ops-layout,.control-split,.audit-layout,.semantic-layout,.eval-run-shell,.analysis-workspace,.report-workspace,.knowledge-workspace,.report-canvas,.agent-studio{grid-template-columns:1fr}
+  .dashboard-hero,.dashboard-composer-row,.workbench-layout,.data-catalog-workspace,.dataops-trace-layout,.ops-layout,.control-split,.audit-layout,.semantic-layout,.eval-run-shell,.eval-workstation,.panel-builder-grid,.analysis-workspace,.report-workspace,.knowledge-workspace,.report-canvas,.agent-studio{grid-template-columns:1fr}
   .analysis-side,.dataset-detail-card,.agent-inspector{position:static}
   .chat-workspace{grid-template-columns:1fr;height:auto}
   .metric-grid,.grid4,.asset-grid,.agent-grid,.panel-cockpit{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -441,7 +450,7 @@ body{background:var(--bg);color:var(--text)}
 button{background:#171717;box-shadow:none}
 button.secondary{background:#eceae3;color:#171717}
 button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
-.report-action,.knowledge-card,.audit-item{background:#fff;color:#2d2d2a;border:1px solid var(--line);box-shadow:none}
+.report-action,.knowledge-card,.eval-card,.audit-item{background:#fff;color:#2d2d2a;border:1px solid var(--line);box-shadow:none}
 .sidebar{background:#f1f0eb;color:#2d2d2a;border-right:1px solid #e1ded6}
 .logo span,.user-box,.nav-section{color:#7d786d}
 .sidebar nav button{color:#2d2d2a}

@@ -17,6 +17,11 @@ let knowledgeBasesCache = [];
 let knowledgeVersionCache = {};
 let auditLogsCache = [];
 let activeAgentDetailId = '';
+let panelCatalogCache = [];
+let activePanelId = '';
+let evalSetsCache = [];
+let evalCaseCache = {};
+let activeEvalSetId = '';
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -64,7 +69,9 @@ const keyLabels={
   intent:'意图',template_text:'模板问题',sql_template:'SQL 模板',chart_type:'图表类型',example_questions:'示例问题',
   field_count:'字段',field_desc_missing_count:'字段说明缺口',field_name:'字段名',display_name:'展示名',data_type:'数据类型',
   is_sensitive:'敏感',masking_policy:'脱敏策略',key:'配置键',value:'值',username:'用户名',department:'部门',
-  failed_login_count:'失败登录',locked_until:'锁定至',last_login_at:'上次登录',permissions:'权限'
+  failed_login_count:'失败登录',locked_until:'锁定至',last_login_at:'上次登录',permissions:'权限',
+  expected_answer:'期望回答',expected_sql:'期望 SQL',expected_report_outline:'报告大纲',tags:'标签',widget_type:'Widget',
+  metric_id:'指标',query_sql:'SQL',eval_set_id:'评测集',agent_version:'Agent 版本',started_at:'开始时间',finished_at:'结束时间'
 };
 const valueLabels={
   active:'启用',published:'已发布',success:'成功',failed:'失败',error:'错误',pending:'待处理',pending_review:'待复核',
@@ -244,11 +251,11 @@ function knowledgeCard(k,versions=[]){
 }
 function evalSetCard(s,cases=[]){
   const tags=[...new Set(cases.flatMap(c=>Array.isArray(c.tags)?c.tags:[]))];
-  return `<article class="eval-card">
+  return `<button class="eval-card ${s.id===activeEvalSetId?'active':''}" data-eval-set-id="${esc(s.id)}" onclick="selectEvalSet('${jsArg(s.id)}')">
     <div class="eval-card-head"><div><span>${esc(s.business_domain||'Evaluation')}</span><b>${esc(s.name||s.id)}</b></div>${tag(`${cases.length} cases`,'green')}</div>
     <p>${esc(s.description||'暂无说明')}</p>
     <div class="eval-tags">${compactTags(tags,5)}</div>
-  </article>`;
+  </button>`;
 }
 function evalResultPayload(row){
   if(!row) return {};
@@ -396,6 +403,9 @@ function renderChart(chart){
 }
 function agentOptions(type){return agents.filter(a=>!type || a.type===type).map(a=>`<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}
 function datasetOptions(selected=''){return datasets.map(d=>`<option value="${esc(d.id)}" ${d.id===selected?'selected':''}>${esc(d.name)}</option>`).join('')}
+function metricOptions(selected='', datasetId=''){
+  return metrics.filter(m=>!datasetId || m.dataset_id===datasetId).map(m=>`<option value="${esc(m.id)}" ${m.id===selected?'selected':''}>${esc(m.name)}</option>`).join('');
+}
 const sampleSqlByDataset={
   dataset_orders:'SELECT channel, SUM(revenue) AS revenue FROM sales_orders GROUP BY channel ORDER BY revenue DESC LIMIT 10',
   dataset_business_daily:'SELECT region, SUM(revenue) AS revenue, AVG(risk_score) AS risk_score FROM business_metrics_daily GROUP BY region ORDER BY revenue DESC LIMIT 10',
@@ -1106,15 +1116,124 @@ async function cancelAnalysisTask(btn){
 }
 
 async function renderPanels(){
-  const panels=await api('/api/data/panels').catch(()=>[]); const pid=panels[0]?.id||'panel_business_overview';
+  const panels=await api('/api/data/panels').catch(()=>[]);
+  panelCatalogCache=panels;
+  const pid=activePanelId || panels[0]?.id || 'panel_business_overview';
   let panel=await api('/api/data/panels/'+pid).catch(()=>null);
+  if(panel) activePanelId=panel.id;
   const options=panels.length?panels.map(p=>`<option value="${esc(p.id)}">${esc(p.name)}</option>`).join(''):(panel?`<option value="${esc(panel.id)}">${esc(panel.name)}</option>`:'');
   const prompt='给我生成一个经营总览面板';
-  document.getElementById('page-panels').innerHTML=`${pageHeader('分析面板','以物化经营面板承接问数结果，展示指标卡、Top 图、风险图和生成 SQL。',['Widgets','Materialized view','Agent generated'])}<div class="panel-toolbar"><select id="panelSelect" aria-label="选择分析面板" ${options?'':'disabled'}>${options}</select><button onclick="renderPanelDetail()" ${options?'':'disabled'}>打开面板</button><button class="secondary" onclick="showPage('chat');setTimeout(()=>askPreset('${jsArg(prompt)}'),50)">让 Agent 生成</button></div><div id="panelDetail">${panel?panelHtml(panel):emptyState('暂无面板','当前没有可展示的分析面板。')}</div>`;
+  document.getElementById('page-panels').innerHTML=`${pageHeader('分析面板','以物化经营面板承接问数结果，展示指标卡、Top 图、风险图和生成 SQL。',['Widgets','Materialized view','Agent generated'])}
+  <div class="panel-toolbar"><select id="panelSelect" aria-label="选择分析面板" ${options?'':'disabled'}>${options}</select><button onclick="renderPanelDetail()" ${options?'':'disabled'}>打开面板</button><button class="secondary" onclick="showPage('chat');setTimeout(()=>askPreset('${jsArg(prompt)}'),50)">让 Agent 生成</button></div>
+  <div class="panel-builder-grid section-gap">
+    <section class="panel-builder-card">
+      <div class="section-title"><div><h2>面板 brief</h2><p>从业务目标创建空面板，后续 Widget 通过 SQL Guard 预校验再保存。</p></div>${tag('panel:manage','amber')}</div>
+      <label class="field-label" for="panelName">名称</label><input id="panelName" value="经营专题面板"/>
+      <div class="form-row"><div><label class="field-label" for="panelDomain">业务域</label><input id="panelDomain" value="Business"/></div><div><label class="field-label" for="panelTemplate">起点</label><select id="panelTemplate" onchange="syncPanelTemplate()"><option value="revenue">收入分析</option><option value="risk">风险监控</option><option value="ops">运营效率</option></select></div></div>
+      <label class="field-label" for="panelDescription">说明</label><textarea id="panelDescription">面向经营复盘的可审计分析面板，包含指标卡、趋势图和异常下钻入口。</textarea>
+      <button onclick="createPanel(this)">创建面板</button><div id="panelCreateResult"></div>
+    </section>
+    <section class="panel-builder-card">
+      <div class="section-title"><div><h2>Widget 设计器</h2><p>选择目标面板、数据集和图表类型；保存前后端会用只读 SQL 预跑 1 行。</p></div>${tag('SQL Guard','green')}</div>
+      <label class="field-label" for="panelWidgetPanel">目标面板</label><select id="panelWidgetPanel">${panelOptions(panels,panel?.id)}</select>
+      <div class="form-row"><div><label class="field-label" for="panelWidgetDataset">数据集</label><select id="panelWidgetDataset" onchange="syncPanelWidgetDraft()">${datasetOptions(defaultQueryDataset())}</select></div><div><label class="field-label" for="panelWidgetType">类型</label><select id="panelWidgetType" onchange="syncPanelWidgetDraft()"><option value="metric_card">指标卡</option><option value="bar">柱状图</option><option value="line">趋势图</option><option value="table">表格</option></select></div></div>
+      <div class="form-row"><div><label class="field-label" for="panelWidgetMetric">指标</label><select id="panelWidgetMetric">${metricOptions('',defaultQueryDataset())}</select></div><div><label class="field-label" for="panelWidgetTitle">标题</label><input id="panelWidgetTitle" value="收入 Top 分布"/></div></div>
+      <label class="field-label" for="panelWidgetSql">只读 SQL</label><textarea id="panelWidgetSql">${esc(sampleSqlForDataset(defaultQueryDataset()))}</textarea>
+      <button onclick="createPanelWidget(this)">保存 Widget</button><div id="panelWidgetResult"></div>
+    </section>
+  </div>
+  <div id="panelDetail">${panel?panelHtml(panel):emptyState('暂无面板','当前没有可展示的分析面板。')}</div>`;
   if(panel) document.getElementById('panelSelect').value=pid;
+  syncPanelWidgetDraft();
   if(panel?.trace_id) openPanelTrace(panel.trace_id,'sql',null).catch(()=>{});
 }
-async function renderPanelDetail(){const select=document.getElementById('panelSelect'); if(!select?.value) return; document.getElementById('panelDetail').innerHTML=inlineLoading('正在物化面板数据'); try{const panel=await api('/api/data/panels/'+select.value); document.getElementById('panelDetail').innerHTML=panelHtml(panel); if(panel.trace_id) openPanelTrace(panel.trace_id,'sql',null).catch(()=>{})}catch(e){document.getElementById('panelDetail').innerHTML=stateBanner('error','面板加载失败',e.message)}}
+function panelOptions(panels=[], selected=''){
+  return panels.length?panels.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.name)}</option>`).join(''):'<option value="">暂无面板</option>';
+}
+function syncPanelTemplate(){
+  const tpl=document.getElementById('panelTemplate')?.value;
+  const name=document.getElementById('panelName');
+  const desc=document.getElementById('panelDescription');
+  const map={
+    revenue:['收入增长分析面板','围绕收入、订单、渠道和区域表现构建可审计面板。'],
+    risk:['经营风险监控面板','聚合区域风险、工单根因和数据质量异常，支持 Trace 下钻。'],
+    ops:['运营效率复盘面板','跟踪订单处理、工单闭环、营销 ROI 和关键运营效率指标。']
+  };
+  if(map[tpl]&&name&&!name.dataset.touched) name.value=map[tpl][0];
+  if(map[tpl]&&desc&&!desc.dataset.touched) desc.value=map[tpl][1];
+}
+function syncPanelWidgetDraft(){
+  const ds=document.getElementById('panelWidgetDataset');
+  const metric=document.getElementById('panelWidgetMetric');
+  const type=document.getElementById('panelWidgetType')?.value||'bar';
+  const title=document.getElementById('panelWidgetTitle');
+  const sql=document.getElementById('panelWidgetSql');
+  const metricList=metricOptions(metric?.value||'',ds?.value||'');
+  if(metric) metric.innerHTML=metricList || '<option value="">不绑定指标</option>';
+  const dsName=datasetName(ds?.value);
+  if(title&&!title.value) title.value=type==='metric_card'?`${dsName} 核心指标`:`${dsName} 分布`;
+  if(sql) sql.value=sampleSqlForDataset(ds?.value||defaultQueryDataset());
+}
+async function createPanel(btn){
+  const box=document.getElementById('panelCreateResult');
+  setBusy(btn,true);
+  if(box) box.innerHTML=inlineLoading('正在创建面板');
+  try{
+    const payload={name:panelName.value,business_domain:panelDomain.value,description:panelDescription.value};
+    const panel=await api('/api/data/panels',{method:'POST',body:JSON.stringify(payload)});
+    activePanelId=panel.id;
+    toast('面板已创建');
+    await renderPanels();
+    document.getElementById('panelCreateResult').innerHTML=stateBanner('success','面板已创建','可以继续添加 Widget，保存前会执行 SQL Guard 预校验。',[panel.id]);
+  }catch(e){
+    if(box) box.innerHTML=stateBanner('error','面板创建失败',e.message);
+    toast('面板创建失败：'+e.message);
+  }finally{setBusy(btn,false)}
+}
+async function createPanelWidget(btn){
+  const box=document.getElementById('panelWidgetResult');
+  const panelId=document.getElementById('panelWidgetPanel')?.value||activePanelId;
+  if(!panelId) return toast('请先选择或创建面板');
+  setBusy(btn,true);
+  if(box) box.innerHTML=inlineLoading('正在校验并保存 Widget');
+  try{
+    const datasetId=document.getElementById('panelWidgetDataset')?.value||null;
+    const widgetType=document.getElementById('panelWidgetType')?.value||'bar';
+    const payload={
+      panel_id:panelId,
+      widget_type:widgetType,
+      title:panelWidgetTitle.value,
+      dataset_id:datasetId,
+      metric_id:panelWidgetMetric.value||null,
+      query_sql:panelWidgetSql.value,
+      chart_spec:{chart_type:widgetType==='metric_card'?'number':widgetType},
+      position_json:{columns:6}
+    };
+    const widget=await api(`/api/data/panels/${panelId}/widgets`,{method:'POST',body:JSON.stringify(payload)});
+    activePanelId=panelId;
+    toast('Widget 已保存');
+    await renderPanels();
+    document.getElementById('panelWidgetResult').innerHTML=stateBanner('success','Widget 已保存','后端已完成只读 SQL 预校验，并刷新面板物化结果。',[widget.id,panelId]);
+  }catch(e){
+    if(box) box.innerHTML=stateBanner('error','Widget 保存失败',e.message);
+    toast('Widget 保存失败：'+e.message);
+  }finally{setBusy(btn,false)}
+}
+async function renderPanelDetail(){
+  const select=document.getElementById('panelSelect');
+  if(!select?.value) return;
+  activePanelId=select.value;
+  const widgetPanel=document.getElementById('panelWidgetPanel');
+  if(widgetPanel) widgetPanel.value=select.value;
+  document.getElementById('panelDetail').innerHTML=inlineLoading('正在物化面板数据');
+  try{
+    const panel=await api('/api/data/panels/'+select.value);
+    document.getElementById('panelDetail').innerHTML=panelHtml(panel);
+    if(panel.trace_id) openPanelTrace(panel.trace_id,'sql',null).catch(()=>{})
+  }catch(e){
+    document.getElementById('panelDetail').innerHTML=stateBanner('error','面板加载失败',e.message)
+  }
+}
 function panelWidgetHtml(w){
   const error=widgetHasError(w);
   const chartType=widgetChartType(w);
@@ -1495,15 +1614,92 @@ async function renderKnowledge(){
 async function renderEvals(){
   const sets=await api('/api/eval-sets').catch(()=>[]);
   const caseLists=await Promise.all(sets.map(s=>api(`/api/eval-sets/${s.id}/cases`).catch(()=>[])));
+  evalSetsCache=sets;
+  evalCaseCache=Object.fromEntries(sets.map((s,i)=>[s.id,caseLists[i]||[]]));
+  activeEvalSetId=activeEvalSetId || sets[0]?.id || '';
   const totalCases=caseLists.flat().length;
   document.getElementById('page-evals').innerHTML=`${pageHeader('评测中心','用评测集对 Agent 回答质量、路由、SQL Guard 和回归结果做持续检查。',['Eval sets','Regression','Quality gate'])}
   <div class="metric-grid tight">${metricCard('评测集',sets.length,'覆盖业务问数和多 Agent 能力')}${metricCard('用例',totalCases,'问题、期望 SQL 和标签')}${metricCard('可测 Agent',agents.length,'当前权限范围内')}${metricCard('默认门槛','0.80','建议作为回归判定线')}</div>
-  <div class="eval-layout section-gap">
-    <section class="ops-main"><div class="section-title"><div><h2>评测资产</h2><p>先看覆盖范围，再选择评测集与 Agent 运行回归。</p></div>${tag(`${totalCases} cases`)}</div><div class="eval-grid">${sets.length?sets.map((s,i)=>evalSetCard(s,caseLists[i]||[])).join(''):emptyState('暂无评测集','创建评测集后可用于问数、路由和 SQL Guard 回归。')}</div></section>
-    <div class="card form-shell eval-runner"><h3>运行评测</h3><p class="muted">选择评测集和 Agent，生成结果明细；运行会写入 Trace 与审计。</p><label class="field-label" for="evalSet">评测集</label><select id="evalSet">${sets.map(s=>`<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}</select><label class="field-label" for="evalAgent">Agent</label><select id="evalAgent">${agentOptions()}</select><button onclick="runEval(this)">运行评测</button><div id="evalResult"></div></div>
+  <div class="eval-workstation section-gap">
+    <section class="ops-main"><div class="section-title"><div><h2>评测资产</h2><p>先看覆盖范围，再选择评测集与 Agent 运行回归。</p></div>${tag(`${totalCases} cases`)}</div><div class="eval-grid">${sets.length?sets.map((s,i)=>evalSetCard(s,caseLists[i]||[])).join(''):emptyState('暂无评测集','创建评测集后可用于问数、路由和 SQL Guard 回归。')}</div><div id="evalCasePreview" class="section-gap">${evalCasePreviewHtml(activeEvalSetId)}</div></section>
+    <aside class="eval-side">
+      <div class="card form-shell eval-runner"><h3>运行评测</h3><p class="muted">选择评测集和 Agent，生成结果明细；运行会写入 Trace 与审计。</p><label class="field-label" for="evalSet">评测集</label><select id="evalSet" onchange="selectEvalSet(this.value)">${evalSetOptions(sets,activeEvalSetId)}</select><label class="field-label" for="evalAgent">Agent</label><select id="evalAgent">${agentOptions()}</select><button onclick="runEval(this)">运行评测</button><div id="evalResult"></div></div>
+      <div class="card form-shell eval-create-card"><h3>创建评测集</h3><p class="muted">把新的业务场景沉淀为可重复运行的回归套件。</p><label class="field-label" for="evalSetName">名称</label><input id="evalSetName" value="经营分析回归集"/><div class="form-row"><div><label class="field-label" for="evalSetDomain">业务域</label><input id="evalSetDomain" value="Business"/></div><button onclick="createEvalSet(this)">创建</button></div><label class="field-label" for="evalSetDescription">说明</label><textarea id="evalSetDescription">覆盖常见经营问数、SQL Guard、图表和 Trace 证据链。</textarea><div id="evalSetCreateResult"></div></div>
+      <div class="card form-shell eval-create-card"><h3>添加用例</h3><p class="muted">一条用例就是一个可回放问题，可带期望 SQL 与标签。</p><label class="field-label" for="evalCaseSet">目标评测集</label><select id="evalCaseSet">${evalSetOptions(sets,activeEvalSetId)}</select><label class="field-label" for="evalCaseQuestion">问题</label><textarea id="evalCaseQuestion">按渠道统计本月收入，并说明最高渠道。</textarea><label class="field-label" for="evalCaseSql">期望 SQL</label><textarea id="evalCaseSql">${esc(sampleSqlForDataset(defaultQueryDataset()))}</textarea><input id="evalCaseTags" value="收入, SQL Guard, Trace" aria-label="标签"/><button onclick="createEvalCase(this)">添加用例</button><div id="evalCaseCreateResult"></div></div>
+    </aside>
   </div>`;
 }
-async function runEval(btn){setBusy(btn,true);document.getElementById('evalResult').innerHTML=inlineLoading('正在运行评测集');try{const run=await api('/api/eval-runs',{method:'POST',body:JSON.stringify({eval_set_id:evalSet.value,agent_id:evalAgent.value})});document.getElementById('evalResult').innerHTML=evalRunHtml(run);}catch(e){document.getElementById('evalResult').innerHTML=stateBanner('error','评测运行失败',e.message)}finally{setBusy(btn,false)}}
+function evalSetOptions(sets=[],selected=''){
+  return sets.length?sets.map(s=>`<option value="${esc(s.id)}" ${s.id===selected?'selected':''}>${esc(s.name)}</option>`).join(''):'<option value="">暂无评测集</option>';
+}
+function evalCasePreviewHtml(setId){
+  const set=evalSetsCache.find(s=>s.id===setId);
+  const cases=evalCaseCache[setId]||[];
+  if(!setId) return emptyState('未选择评测集','创建或选择评测集后会显示用例清单。');
+  return `<div class="eval-case-preview"><div class="card-heading"><div><h3>${esc(set?.name||setId)}</h3><p class="muted">${esc(set?.description||'暂无说明')}</p></div>${tag(`${cases.length} cases`,'green')}</div>${cases.length?renderTable(cases,{columns:['question','expected_sql','tags'],limit:80,compact:true}):emptyState('暂无用例','在右侧添加第一条业务问题。')}</div>`;
+}
+function selectEvalSet(id){
+  activeEvalSetId=id;
+  document.querySelectorAll('.eval-card').forEach(card=>card.classList.toggle('active',card.dataset.evalSetId===id));
+  const runSelect=document.getElementById('evalSet'); if(runSelect) runSelect.value=id;
+  const caseSelect=document.getElementById('evalCaseSet'); if(caseSelect) caseSelect.value=id;
+  const preview=document.getElementById('evalCasePreview'); if(preview) preview.innerHTML=evalCasePreviewHtml(id);
+}
+async function createEvalSet(btn){
+  const box=document.getElementById('evalSetCreateResult');
+  setBusy(btn,true);
+  if(box) box.innerHTML=inlineLoading('正在创建评测集');
+  try{
+    const payload={name:evalSetName.value,business_domain:evalSetDomain.value,description:evalSetDescription.value};
+    const created=await api('/api/eval-sets',{method:'POST',body:JSON.stringify(payload)});
+    activeEvalSetId=created.id;
+    toast('评测集已创建');
+    await renderEvals();
+    document.getElementById('evalSetCreateResult').innerHTML=stateBanner('success','评测集已创建','可以继续添加用例并运行回归。',[created.id]);
+  }catch(e){
+    if(box) box.innerHTML=stateBanner('error','评测集创建失败',e.message);
+    toast('评测集创建失败：'+e.message);
+  }finally{setBusy(btn,false)}
+}
+async function createEvalCase(btn){
+  const box=document.getElementById('evalCaseCreateResult');
+  const setId=document.getElementById('evalCaseSet')?.value||activeEvalSetId;
+  if(!setId) return toast('请先选择或创建评测集');
+  setBusy(btn,true);
+  if(box) box.innerHTML=inlineLoading('正在添加评测用例');
+  try{
+    const payload={
+      question:evalCaseQuestion.value,
+      expected_answer:'',
+      expected_sql:evalCaseSql.value,
+      expected_chart_json:{},
+      expected_report_outline:'',
+      tags:(evalCaseTags.value||'').split(',').map(x=>x.trim()).filter(Boolean)
+    };
+    const created=await api(`/api/eval-sets/${setId}/cases`,{method:'POST',body:JSON.stringify(payload)});
+    activeEvalSetId=setId;
+    toast('评测用例已添加');
+    await renderEvals();
+    document.getElementById('evalCaseCreateResult').innerHTML=stateBanner('success','评测用例已添加','该问题会参与后续回归运行。',[created.id,setId]);
+  }catch(e){
+    if(box) box.innerHTML=stateBanner('error','评测用例添加失败',e.message);
+    toast('评测用例添加失败：'+e.message);
+  }finally{setBusy(btn,false)}
+}
+async function runEval(btn){
+  const resultBox=document.getElementById('evalResult');
+  const setId=document.getElementById('evalSet')?.value||activeEvalSetId;
+  if(!setId) return toast('请选择评测集');
+  setBusy(btn,true);
+  resultBox.innerHTML=inlineLoading('正在运行评测集');
+  try{
+    const run=await api('/api/eval-runs',{method:'POST',body:JSON.stringify({eval_set_id:setId,agent_id:evalAgent.value})});
+    activeEvalSetId=setId;
+    resultBox.innerHTML=evalRunHtml(run);
+  }catch(e){
+    resultBox.innerHTML=stateBanner('error','评测运行失败',e.message);
+  }finally{setBusy(btn,false)}
+}
 function configRows(config){
   return Object.entries(config||{}).map(([key,value])=>({
     key,
