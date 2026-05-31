@@ -22,6 +22,7 @@ let activePanelId = '';
 let evalSetsCache = [];
 let evalCaseCache = {};
 let activeEvalSetId = '';
+let semanticFilterState = {q:'', domain:''};
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -232,9 +233,18 @@ function reportDetailHtml(report){
   const current=currentReportVersion(report);
   const evidence=reportEvidence(report);
   const traceIds=[...collectTraceIds(evidence)];
+  const reportTitle=report.title||report.id;
+  const reportId=report.id||reportTitle;
+  const reportActions=contextActionStrip([
+    {label:'继续追问',onclick:`setChatDraft('${jsArg(`基于报告“${reportTitle}”继续追问：请解释核心结论、证据来源和下一步建议。`)}','agent_router')`},
+    {label:'转深度研究',onclick:`setAnalysisDraft('${jsArg(`基于报告“${reportTitle}”继续做深度复盘：核对证据、风险点和可执行改进项。`)}','agent_business_analysis')`},
+    {label:'创建 Codex 任务',onclick:`setCodexDraft('${jsArg(`改进报告体验：${reportTitle}`)}','${jsArg(`围绕报告 ${reportId} 检查报告中心体验、证据 Trace 入口和上下文动作，保持 RBAC、SQL Guard、Trace 和审计能力不退化。`)}')`},
+    {label:'查看审计',onclick:`openAuditFiltered('${jsArg(reportId)}')`}
+  ]);
   return `<div class="detail-panel report-detail">
     <div class="card-heading"><div><h3>${esc(report.title||report.id)}</h3><p class="muted">${esc(report.report_type||'report')} · ${esc(report.owner_id||'-')} · ${esc(timeText(report.created_at))}</p></div><div>${statusTag(report.status)}${tag(`${versions.length} versions`)}</div></div>
     <div class="report-actions">${reportActionButtons(report)}${traceIds[0]?`<button class="report-action" onclick="openReportTrace('${jsArg(traceIds[0])}','summary',this)">打开证据 Trace</button>`:''}</div>
+    ${reportActions}
     <div class="report-canvas">
       <section><div class="report">${esc(current.content_markdown||'暂无报告正文')}</div></section>
       <aside><h4>版本</h4>${reportVersionRail(versions)}<h4 class="section-gap">证据</h4>${reportEvidenceCards(evidence)}</aside>
@@ -322,6 +332,72 @@ function feedbackControls(r, meta={}){
 }
 function parseJsonMaybe(text){
   try{return JSON.parse(text)}catch(e){return null}
+}
+function taskResultPayload(task){
+  const raw=task?.result_json;
+  if(!raw) return {};
+  if(typeof raw==='string') return parseJsonMaybe(raw)||{};
+  return raw;
+}
+function taskTraceId(task){
+  const payload=taskResultPayload(task);
+  const ref=task?.result_ref||'';
+  return payload.trace_id || (String(ref).startsWith('trace_')?ref:'');
+}
+function taskProgressValue(task){
+  if(Number.isFinite(Number(task?.progress))) return Math.max(0,Math.min(100,Number(task.progress)));
+  return task?.status==='success'||task?.status==='completed'?100:task?.status==='failed'?100:10;
+}
+function taskQueueSummary(tasks=[]){
+  return {
+    total:tasks.length,
+    active:tasks.filter(t=>['pending','running','awaiting_approval','ready'].includes(t.status)).length,
+    done:tasks.filter(t=>['success','completed'].includes(t.status)).length,
+    failed:tasks.filter(t=>['failed','error'].includes(t.status)).length
+  };
+}
+function taskQueueCard(task,detailId='dashboardTaskDetail',traceHandler='openDashboardTrace'){
+  const traceId=taskTraceId(task);
+  const progress=taskProgressValue(task);
+  return `<button class="task-queue-card ${statusClass(task.status)}" onclick="openTaskDetail('${jsArg(detailId)}','${jsArg(task.id)}','${jsArg(traceHandler)}')">
+    <div class="task-queue-head"><div><span>${esc(displayValue(task.task_type||'task'))}</span><b>${esc(task.id)}</b></div>${statusTag(task.status)}</div>
+    <div class="task-progress" aria-label="任务进度"><i style="width:${progress}%"></i></div>
+    <p>${esc(short(task.error_message||taskResultPayload(task).answer||taskResultPayload(task).question||task.result_ref||'等待任务输出',110))}</p>
+    <div class="task-queue-meta">${tag(`${progress}%`)}${task.agent_id?tag(task.agent_id):''}${traceId?tag(traceId,'green'):tag('no-trace','amber')}</div>
+  </button>`;
+}
+function taskQueuePanel(tasks=[],opts={}){
+  const id=opts.detailId||'dashboardTaskDetail';
+  const traceHandler=opts.traceHandler||'openDashboardTrace';
+  const summary=taskQueueSummary(tasks);
+  const shown=tasks.slice(0,opts.limit||8);
+  return `<div class="task-queue-panel">
+    <div class="section-title"><div><h2>${esc(opts.title||'最近任务')}</h2><p>${esc(opts.description||'聚合研究、报告和工程任务，便于从控制塔继续进入证据链。')}</p></div>${tag(`${summary.total} tasks`)}</div>
+    <div class="task-queue-metrics">${metricCard('活动中',summary.active,'待审批或执行')}${metricCard('已完成',summary.done,'成功闭环')}${metricCard('异常',summary.failed,'需要复核')}</div>
+    <div class="task-queue-list">${shown.length?shown.map(t=>taskQueueCard(t,id,traceHandler)).join(''):emptyState('暂无任务','创建深度研究或 Codex 任务后会出现在这里。')}</div>
+    <div id="${esc(id)}" class="task-detail-card">${emptyState('选择任务','点击左侧任务后显示结果 JSON、Trace 和继续动作。')}</div>
+  </div>`;
+}
+async function openTaskDetail(detailId,taskId,traceHandler='openDashboardTrace'){
+  const box=document.getElementById(detailId);
+  if(!box) return;
+  box.innerHTML=inlineLoading('正在读取任务详情');
+  try{
+    const task=await api('/api/tasks/'+taskId);
+    const payload=taskResultPayload(task);
+    const traceId=taskTraceId(task);
+    if((task.task_type||'').includes('analysis')) lastAnalysisTaskId=task.id;
+    box.innerHTML=`<div class="task-detail">
+      <div class="card-heading"><div><h3>${esc(task.id)}</h3><p class="muted">${esc(displayValue(task.task_type||'task'))} · ${esc(timeText(task.created_at))}</p></div>${statusTag(task.status)}</div>
+      <div class="task-queue-meta">${task.agent_id?tag(task.agent_id):''}${tag(`${taskProgressValue(task)}%`)}${traceId?tag(traceId,'green'):tag('no-trace','amber')}</div>
+      ${traceId?traceActions(traceId,traceHandler):stateBanner('warn','暂无 Trace','该任务没有可定位的 Trace ID。')}
+      ${(task.task_type||'').includes('analysis')?`<button class="secondary" onclick="showPage('analysis');setTimeout(()=>loadLastAnalysisTask(null),80)">在深度研究中打开</button>`:''}
+      ${task.error_message?stateBanner('error','任务错误',task.error_message):''}
+      <details open><summary>结果 JSON</summary><pre class="code">${esc(JSON.stringify(payload||{},null,2))}</pre></details>
+    </div>`;
+  }catch(e){
+    box.innerHTML=stateBanner('error','任务详情加载失败',e.message);
+  }
 }
 function messageTraceId(message){
   if(message?.content_type!=='agent_result') return '';
@@ -449,6 +525,68 @@ function askGlobalQuery(q){
     if(q) input.value=q;
     q ? sendChat() : input.focus();
   },60);
+}
+function whenElementReady(id,fn,attempts=24){
+  const el=document.getElementById(id);
+  if(el){ fn(el); return; }
+  if(attempts>0) setTimeout(()=>whenElementReady(id,fn,attempts-1),60);
+}
+function setChatDraft(prompt, agentId='', datasetId=''){
+  showPage('chat');
+  whenElementReady('chatInput',(input)=>{
+    const agent=document.getElementById('chatAgent');
+    if(agentId&&agent&&[...agent.options].some(o=>o.value===agentId)) agent.value=agentId;
+    const dataset=document.getElementById('chatDataset');
+    if(datasetId&&dataset&&[...dataset.options].some(o=>o.value===datasetId)) dataset.value=datasetId;
+    input.value=prompt;
+    input.focus();
+  });
+}
+function setAnalysisDraft(prompt, agentId=''){
+  showPage('analysis');
+  whenElementReady('analysisQuestion',(input)=>{
+    const agent=document.getElementById('analysisAgent');
+    if(agentId&&agent&&[...agent.options].some(o=>o.value===agentId)) agent.value=agentId;
+    input.value=prompt;
+    input.focus();
+  });
+}
+function setCodexDraft(title,prompt){
+  showPage('codex');
+  whenElementReady('codexPrompt',(promptInput)=>{
+    const titleInput=document.getElementById('codexTitle');
+    if(titleInput) titleInput.value=title;
+    promptInput.value=prompt;
+    promptInput.focus();
+  });
+}
+function openAuditFiltered(query){
+  showPage('audit');
+  whenElementReady('auditSearch',(input)=>{
+    input.value=query;
+    refreshAuditView();
+    input.focus();
+  });
+}
+function openSemanticFiltered(q='',domain=''){
+  semanticFilterState={q,domain};
+  showPage('semantic');
+}
+function openRelatedResource(type='',id=''){
+  const t=String(type||'');
+  if(t.includes('report')){ showPage('reports'); if(id) setTimeout(()=>openReportDetail(id,null),140); return; }
+  if(t.includes('knowledge')){ showPage('knowledge'); if(id) setTimeout(()=>selectKnowledgeBase(id),140); return; }
+  if(t.includes('semantic')){ openSemanticFiltered(id); return; }
+  if(t.includes('dataset')||t.includes('data_source')){ showPage('dataops'); if(id) setTimeout(()=>openDatasetDetail(id,null),140); return; }
+  if(t.includes('agent')){ showPage('agents'); if(id) setTimeout(()=>openAgentDetail(id),140); return; }
+  if(t.includes('task')){ showPage('analysis'); return; }
+  if(t.includes('eval')){ showPage('evals'); return; }
+  showPage('dashboard');
+}
+function contextActionStrip(actions=[]){
+  const items=actions.filter(Boolean);
+  if(!items.length) return '';
+  return `<div class="context-actions">${items.map(a=>`<button class="${esc(a.cls||'report-action')}" onclick="${a.onclick}">${esc(a.label)}</button>`).join('')}</div>`;
 }
 function openAgentCommand(agentId){
   showPage('chat');
@@ -621,9 +759,12 @@ function showPage(name){
 function globalJump(){const q=(document.getElementById('globalSearch').value||'').trim(); hideCommandMenu(); askGlobalQuery(q)}
 
 async function renderDashboard(){
-  const stats=await api('/api/admin/stats').catch(()=>({counts:{agents:agents.length,datasets:datasets.length,metrics:metrics.length}}));
+  const [stats,codexDiag,tasks]=await Promise.all([
+    api('/api/admin/stats').catch(()=>({counts:{agents:agents.length,datasets:datasets.length,metrics:metrics.length}})),
+    api('/api/codex/diagnostics').catch(()=>({})),
+    api('/api/tasks').catch(()=>[])
+  ]);
   const counts=stats.counts||stats;
-  const codexDiag=await api('/api/codex/diagnostics').catch(()=>({}));
   const p=document.getElementById('page-dashboard');
   const metricOrder=[
     ['agents','可用 Agent','覆盖问数、研究、治理、报告与工程派发'],
@@ -651,6 +792,10 @@ async function renderDashboard(){
     <div class="section-title"><div><h2>工作台入口</h2><p>把 ChatGPT 式的一句话任务分发到问数、深度研究、面板或 Codex，但每条链路仍回到 Trace 与审计。</p></div>${tag('composer')}</div>
     <div class="dashboard-composer-row"><textarea id="dashboardPrompt" rows="2" placeholder="输入一个业务问题、研究目标、面板需求或工程改造任务">本月收入最高的渠道有哪些？</textarea><div><label class="field-label" for="dashboardTarget">目标</label><select id="dashboardTarget"><option value="chat">智能问数</option><option value="analysis">深度研究</option><option value="panel">分析面板</option><option value="codex">Codex 任务</option></select><button onclick="launchDashboardIntent()">开始</button></div></div>
     <div class="prompt-strip">${sampleQuestions.map(dashboardPromptButton).join('')}</div>
+  </div>
+  <div class="dashboard-task-grid section-gap">
+    ${taskQueuePanel(tasks,{title:'最近任务队列',description:'把深度研究、报告和异步任务放回控制塔，点击任务即可继续查看结果与 Trace。',detailId:'dashboardTaskDetail',traceHandler:'openDashboardTrace',limit:6})}
+    ${traceDrawer('dashboardTraceBox','任务证据','从最近任务直接复核计划、SQL、工具调用和输出 Trace。')}
   </div>
   <div class="metric-grid">${metricOrder.map(([k,label,note])=>metricCard(label,counts[k]??0,note)).join('')}</div>
   <div class="grid3 section-gap">
@@ -949,6 +1094,9 @@ async function openTraceInto(boxId,traceId,target='summary',btn,label='Trace'){
 async function openDataTrace(traceId,target='summary',btn){
   return openTraceInto('dataTraceBox',traceId,target,btn,'数据操作 Trace');
 }
+async function openDashboardTrace(traceId,target='summary',btn){
+  return openTraceInto('dashboardTraceBox',traceId,target,btn,'任务 Trace');
+}
 async function openPanelTrace(traceId,target='summary',btn){
   return openTraceInto('panelTraceBox',traceId,target,btn,'面板 Trace');
 }
@@ -1037,8 +1185,9 @@ function researchPromptExamples(){
 function researchPromptButton(q){
   return `<button class="prompt-pill" onclick="document.getElementById('analysisQuestion').value='${jsArg(q)}'">${esc(q)}</button>`;
 }
-function renderAnalysis(){
+async function renderAnalysis(){
   const defaultAgent=agents.find(a=>a.type==='analysis')?.id||'agent_business_analysis';
+  const tasks=await api('/api/tasks').catch(()=>[]);
   document.getElementById('page-analysis').innerHTML=`${pageHeader('深度研究','从一个研究 brief 出发，先生成可审批计划，再执行只读分析、证据复核和报告草稿。',['Plan approval','Evidence drawer','Report draft'])}
   <div class="analysis-workspace">
     <section class="analysis-main">
@@ -1058,6 +1207,7 @@ function renderAnalysis(){
     </section>
     <aside class="analysis-side">
       ${traceDrawer('analysisTraceBox','研究证据','查看计划、SQL、权限检查、工具调用和报告草稿生成步骤。')}
+      ${taskQueuePanel(tasks.filter(t=>(t.task_type||'').includes('analysis')).concat(tasks.filter(t=>!(t.task_type||'').includes('analysis')).slice(0,4)),{title:'研究任务队列',description:'从历史任务恢复上下文，继续审批、刷新或打开 Trace。',detailId:'analysisTaskDetail',traceHandler:'openAnalysisTrace',limit:6})}
       <div class="research-playbook card section-gap"><h3>研究编排</h3>${workflowRail([['Brief','明确问题、范围和输出形态'],['Plan','生成可审批研究计划'],['Evidence','执行只读 SQL 和补充工具调用'],['Draft','产出报告草稿并进入报告中心']])}<div class="approval-banner section-gap"><b>安全边界</b><span>深度研究不会绕过审批、RBAC、SQL Guard、Trace 或报告复核。</span></div></div>
     </aside>
   </div>`;
@@ -1285,7 +1435,7 @@ async function openDatasetDetail(id,btn){
 }
 async function renderDataOps(){
   document.getElementById('page-dataops').innerHTML=`${pageHeader('数据能力','把数据目录、指标口径、只读 SQL、画像、质量规则和导入入口集中到一个治理面。',['Dataset Catalog','Metrics','SQL Guard'])}
-  <div class="tabs segmented"><button class="active" data-tab="catalog" onclick="dataTab('catalog',this)">数据目录</button><button data-tab="query" onclick="dataTab('query',this)">SQL Workbench</button><button data-tab="profile" onclick="dataTab('profile',this)">数据画像</button><button data-tab="quality" onclick="dataTab('quality',this)">数据质量</button><button data-tab="import" onclick="dataTab('import',this)">CSV 导入</button></div><div id="dataTab"></div>`;
+  <div class="tabs segmented"><button class="active" data-tab="catalog" onclick="dataTab('catalog',this)">数据目录</button><button data-tab="query" onclick="dataTab('query',this)">SQL Workbench</button><button data-tab="profile" onclick="dataTab('profile',this)">数据画像</button><button data-tab="quality" onclick="dataTab('quality',this)">数据质量</button><button data-tab="quality-history" onclick="dataTab('quality-history',this)">质量历史</button><button data-tab="import" onclick="dataTab('import',this)">CSV 导入</button></div><div id="dataTab"></div>`;
   dataTab('catalog',document.querySelector('#page-dataops .tabs button[data-tab="catalog"]'));
 }
 async function dataTab(name,btn){document.querySelectorAll('#page-dataops .tabs button').forEach(b=>b.classList.remove('active')); if(btn)btn.classList.add('active'); const box=document.getElementById('dataTab');
@@ -1293,7 +1443,32 @@ async function dataTab(name,btn){document.querySelectorAll('#page-dataops .tabs 
   if(name==='query'){const defaultDs=defaultQueryDataset();box.innerHTML=`<div class="dataops-trace-layout"><div class="card form-shell"><h3>只读 SQL Workbench</h3><p class="muted">查询会经过 SQL Guard，只允许只读语句，结果保留 Trace。</p><label class="field-label" for="qDataset">数据集</label><select id="qDataset" onchange="syncWorkbenchSql()">${datasetOptions(defaultDs)}</select><label class="field-label" for="qSql">SQL</label><textarea id="qSql">${esc(sampleSqlForDataset(defaultDs))}</textarea><button onclick="runSqlWorkbench(this)">执行查询</button><div id="sqlResult"></div></div>${traceDrawer('dataTraceBox','SQL Guard 证据','复核只读 SQL、权限检查和执行步骤。')}<div class="card guard-card"><h3>执行护栏</h3><div class="stepper"><span>Read-only SQL</span><span>SQL Guard</span><span>Dataset Masking</span><span>Trace</span></div><p>适合验证业务口径、抽样分析和面板 SQL，不用于写入或绕过权限。</p></div></div>`;}
   if(name==='profile'){box.innerHTML=`<div class="dataops-trace-layout"><div class="card form-shell"><h3>数据画像</h3><p class="muted">快速查看行数、字段数量、字段画像和样本记录。</p><label class="field-label" for="profileDataset">数据集</label><select id="profileDataset">${datasetOptions()}</select><button onclick="runProfile(this)">生成画像</button><div id="profileResult"></div></div>${traceDrawer('dataTraceBox','画像证据','查看画像任务、权限范围和执行输出。')}</div>`;}
   if(name==='quality'){const rules=await api('/api/data/quality-rules').catch(()=>[]);box.innerHTML=`<div class="dataops-trace-layout"><div class="card"><h3>数据业务规则</h3>${renderTable(rules,{columns:['name','dataset_name','severity','status','description'],limit:80})}<div class="form-row section-gap"><select id="qualityDataset"><option value="">全部数据集</option>${datasetOptions()}</select><button onclick="runQuality(this)">运行规则</button></div><div id="qualityResult"></div></div>${traceDrawer('dataTraceBox','质量证据','复核运行规则、失败行统计和审计 Trace。')}</div>`;}
+  if(name==='quality-history'){const rows=await api('/api/data/quality-results?limit=160').catch(()=>[]);box.innerHTML=qualityHistoryHtml(rows); if(rows[0]?.trace_id) openDataTrace(rows[0].trace_id,'steps',null).catch(()=>{});}
   if(name==='import'){box.innerHTML=`<div class="card form-shell"><h3>CSV 导入</h3><p class="muted">导入后会刷新数据目录；生产环境仍需遵循数据分级和权限策略。</p><div class="form-row"><input id="csvName" value="导入数据集" aria-label="数据集名称"/><input id="csvDomain" value="Imported" aria-label="业务域"/></div><input id="csvFile" type="file" accept=".csv"/><button onclick="importCsv(this)">上传 CSV</button><div id="importResult"></div></div>`;}
+}
+function qualityHistoryCard(row,index){
+  const samples=Array.isArray(row.sample_rows)?row.sample_rows:[];
+  return `<article class="quality-run-card ${statusClass(row.status)}">
+    <div class="quality-run-head"><span>${String(index+1).padStart(2,'0')}</span><div><b>${esc(row.rule_name||row.rule_id)}</b><p>${esc(row.dataset_name||row.dataset_id)} · ${esc(timeText(row.created_at))}</p></div>${statusTag(row.status)}</div>
+    <div class="quality-run-metrics">${tag(`${row.checked_rows??0} checked`)}${tag(`${row.failed_rows??0} failed`,Number(row.failed_rows)>0?'red':'green')}${statusTag(row.severity||'medium')}</div>
+    ${row.trace_id?traceActions(row.trace_id):stateBanner('warn','暂无 Trace','该历史记录没有 trace_id。')}
+    <details><summary>失败样本 ${samples.length}</summary>${samples.length?renderTable(samples,{limit:8,compact:true,meta:false}):emptyState('暂无样本','该规则未返回失败样本。')}</details>
+  </article>`;
+}
+function qualityHistoryHtml(rows=[]){
+  const failedRows=rows.reduce((sum,r)=>sum+Number(r.failed_rows||0),0);
+  const failedRuns=rows.filter(r=>Number(r.failed_rows||0)>0||r.status==='failed').length;
+  const datasetsCount=new Set(rows.map(r=>r.dataset_id).filter(Boolean)).size;
+  const latest=rows[0]?.created_at?timeText(rows[0].created_at):'-';
+  return `<div class="quality-history-grid">
+    <section class="ops-main">
+      <div class="section-title"><div><h2>质量历史</h2><p>从最近质量运行回看失败行、规则级别和 Trace 证据，形成数据治理闭环。</p></div>${tag(`${rows.length} runs`)}</div>
+      <div class="metric-grid tight">${metricCard('运行记录',rows.length,'权限范围内最近结果')}${metricCard('异常行',failedRows,'failed_rows 汇总')}${metricCard('异常运行',failedRuns,'需复核规则')}${metricCard('数据集',datasetsCount,'受影响资产')}${metricCard('最近运行',latest,'按创建时间倒序')}</div>
+      <div class="quality-run-list">${rows.length?rows.slice(0,24).map(qualityHistoryCard).join(''):emptyState('暂无质量历史','运行数据质量规则后会在这里展示历史记录。')}</div>
+      <div class="card section-gap"><h3>历史明细</h3>${renderTable(rows,{columns:['created_at','dataset_name','rule_name','status','checked_rows','failed_rows','severity','trace_id'],limit:80})}</div>
+    </section>
+    ${traceDrawer('dataTraceBox','质量历史 Trace','点击任一历史记录的 Trace 按钮复核规则运行、失败行统计和权限步骤。')}
+  </div>`;
 }
 async function runSqlWorkbench(btn){setBusy(btn,true);document.getElementById('sqlResult').innerHTML=inlineLoading('正在通过 SQL Guard 执行只读查询');try{const r=await api('/api/data/query',{method:'POST',body:JSON.stringify({dataset_id:qDataset.value,sql:qSql.value,max_rows:200})});document.getElementById('sqlResult').innerHTML=`${stateBanner('success','查询完成','SQL Guard 已放行，只读结果已返回。',[r.trace_id||'no-trace'])}${traceActions(r.trace_id)}${renderTable(r.rows||[])}<div class="muted">Trace: ${esc(r.trace_id)}</div>`; if(r.trace_id) openDataTrace(r.trace_id,'sql',null).catch(()=>{});}catch(e){document.getElementById('sqlResult').innerHTML=stateBanner('error','查询被拒绝或执行失败',e.message)}finally{setBusy(btn,false)}}
 async function runProfile(btn){setBusy(btn,true);document.getElementById('profileResult').innerHTML=inlineLoading('正在生成字段画像');try{const r=await api('/api/data/profile/'+profileDataset.value);document.getElementById('profileResult').innerHTML=`${stateBanner('success','画像已生成','字段统计、样本和敏感字段提示已返回。',[r.dataset.name,r.trace_id||'no-trace'])}${traceActions(r.trace_id)}<div class="kpi-row"><div class="kpi"><div class="muted">数据集</div><b>${esc(r.dataset.name)}</b></div><div class="kpi"><div class="muted">行数</div><b>${r.row_count}</b></div><div class="kpi"><div class="muted">字段</div><b>${(r.fields||[]).length}</b></div></div><h3>字段画像</h3>${renderTable(r.fields||[])}<h3>样本</h3>${renderTable(r.sample_rows||[])}`; if(r.trace_id) openDataTrace(r.trace_id,'summary',null).catch(()=>{});}catch(e){document.getElementById('profileResult').innerHTML=stateBanner('error','画像生成失败',e.message)}finally{setBusy(btn,false)}}
@@ -1342,6 +1517,42 @@ function semanticTermForm(cov){
   const options=missing.length?missing.map(m=>`<option value="${esc(m.id)}" data-name="${esc(m.name)}" data-domain="${esc(m.business_domain||'Business')}">${esc(m.name)} / ${esc(m.code)}</option>`).join(''):metrics.map(m=>`<option value="${esc(m.id)}" data-name="${esc(m.name)}" data-domain="${esc(m.business_domain||'Business')}">${esc(m.name)} / ${esc(m.code)}</option>`).join('');
   return `<div class="semantic-create-card"><div class="section-title"><div><h2>补充业务术语</h2><p>把指标缺口直接转为 published term；后端仍由 dataset:manage 权限控制。</p></div>${tag('governed write','amber')}</div><label class="field-label" for="termMetric">绑定指标</label><select id="termMetric" onchange="syncSemanticTermDraft()">${options}</select><label class="field-label" for="termName">术语</label><input id="termName" placeholder="例如：本月收入"/><label class="field-label" for="termDefinition">定义</label><textarea id="termDefinition">说明该指标的业务含义、计算边界和使用注意事项。</textarea><label class="field-label" for="termSynonyms">同义词</label><input id="termSynonyms" placeholder="收入, 营收, GMV"/><button onclick="createSemanticTerm(this)">发布术语</button><div id="semanticCreateResult"></div></div>`;
 }
+function semanticDomains(terms=[],templates=[]){
+  return [...new Set([
+    ...datasets.map(d=>d.business_domain),
+    ...metrics.map(m=>m.business_domain),
+    ...terms.map(t=>t.business_domain),
+    ...templates.map(t=>t.business_domain)
+  ].filter(Boolean))].sort();
+}
+function semanticFilterUrl(base,{includeQuery=true}={}){
+  const params=new URLSearchParams();
+  if(includeQuery && semanticFilterState.q) params.set('q',semanticFilterState.q);
+  if(semanticFilterState.domain) params.set('business_domain',semanticFilterState.domain);
+  const qs=params.toString();
+  return qs?`${base}?${qs}`:base;
+}
+function semanticFilterBar(terms=[],templates=[]){
+  const domains=semanticDomains(terms,templates);
+  return `<div class="semantic-filters">
+    <div><label class="field-label" for="semanticSearch">搜索术语</label><input id="semanticSearch" value="${esc(semanticFilterState.q)}" placeholder="收入、ROI、风险、渠道" onkeydown="if(event.key==='Enter')applySemanticFilters()"/></div>
+    <div><label class="field-label" for="semanticDomainFilter">业务域</label><select id="semanticDomainFilter"><option value="">全部业务域</option>${domains.map(d=>`<option value="${esc(d)}" ${d===semanticFilterState.domain?'selected':''}>${esc(d)}</option>`).join('')}</select></div>
+    <div class="semantic-filter-actions"><button onclick="applySemanticFilters(this)">筛选</button><button class="ghost" onclick="clearSemanticFilters(this)">重置</button></div>
+  </div>`;
+}
+async function applySemanticFilters(btn){
+  semanticFilterState={
+    q:(document.getElementById('semanticSearch')?.value||'').trim(),
+    domain:document.getElementById('semanticDomainFilter')?.value||''
+  };
+  setBusy(btn,true);
+  try{ await renderSemantic(); }finally{ setBusy(btn,false); }
+}
+async function clearSemanticFilters(btn){
+  semanticFilterState={q:'',domain:''};
+  setBusy(btn,true);
+  try{ await renderSemantic(); }finally{ setBusy(btn,false); }
+}
 function syncSemanticTermDraft(){
   const select=document.getElementById('termMetric');
   const opt=select?.selectedOptions?.[0];
@@ -1376,13 +1587,20 @@ async function createSemanticTerm(btn){
   }finally{setBusy(btn,false)}
 }
 async function renderSemantic(){
-  const [terms,templates,cov]=await Promise.all([api('/api/semantic/terms').catch(()=>[]),api('/api/semantic/query-templates').catch(()=>[]),api('/api/semantic/coverage').catch(()=>({}))]);
+  const [terms,templates,cov]=await Promise.all([
+    api(semanticFilterUrl('/api/semantic/terms')).catch(()=>[]),
+    api(semanticFilterUrl('/api/semantic/query-templates',{includeQuery:false})).catch(()=>[]),
+    api('/api/semantic/coverage').catch(()=>({}))
+  ]);
   const covPct=percent(cov.metric_term_coverage);
   const missing=(cov.missing_metric_terms||[]).length;
+  const filtered=semanticFilterState.q||semanticFilterState.domain;
   document.getElementById('page-semantic').innerHTML=`${pageHeader('语义中心','治理指标、字段、术语和查询模板，让业务口径可复用、可解释、可审计。',['Metric glossary','Query templates','Coverage'])}
   <div class="semantic-hero"><div><h2>指标覆盖率 ${covPct}%</h2><p>将技术字段、业务术语和指标口径绑定，减少问数歧义，并把可复用查询模板直接回流到智能问数。</p><div class="coverage-bar"><span style="width:${covPct}%"></span></div><div class="semantic-health">${missing?tag(`${missing} metrics missing`,'amber'):tag('metric terms complete','green')}${tag(`${cov.field_desc_missing_count??0} field gaps`,cov.field_desc_missing_count?'amber':'green')}</div></div><div class="metric-grid tight">${metricCard('数据集',cov.dataset_count??'-','已纳入语义覆盖')}${metricCard('指标',cov.metric_count??'-','可解释业务口径')}${metricCard('字段',cov.field_count??'-','字段说明与分类')}${metricCard('术语',cov.term_count??terms.length,'业务语言资产')}${metricCard('模板',templates.length,'可复用查询入口')}${metricCard('覆盖缺口',missing,'待补指标术语')}</div></div>
   <div class="semantic-layout section-gap">
     <section class="semantic-main">
+      ${semanticFilterBar(terms,templates)}
+      ${filtered?stateBanner('info','已应用筛选','术语按搜索词过滤，术语和模板按业务域过滤；覆盖率仍展示全局权限范围。',[semanticFilterState.q||'no keyword',semanticFilterState.domain||'all domains']):''}
       <div class="section-title"><div><h2>业务术语资产</h2><p>展示定义、同义词和 canonical object 绑定，给业务用户和数据治理人员同一套口径。</p></div>${tag(`${terms.length} terms`)}</div>
       <div class="semantic-grid">${terms.length?terms.map(semanticTermCard).join(''):emptyState('暂无术语','当前没有可展示的业务术语。')}</div>
       <div class="section-title section-gap"><div><h2>查询模板库</h2><p>把常用问题、图表意图和 SQL 模板绑定，让智能问数有稳定入口。</p></div>${tag(`${templates.length} templates`)}</div>
@@ -1564,10 +1782,19 @@ function knowledgeBindingAgents(kb){
 function knowledgeDetailHtml(kb,versions=[]){
   if(!kb) return emptyState('未选择知识库','点击左侧知识资产查看版本、Adapter 和 Agent 引用情况。');
   const bound=knowledgeBindingAgents(kb);
+  const kbName=kb.name||kb.id;
+  const preferredAgent=bound[0]?.id||'agent_router';
+  const actions=contextActionStrip([
+    {label:'用知识库提问',onclick:`setChatDraft('${jsArg(`基于知识库“${kbName}”回答：请说明它适合支撑哪些业务问题，并给出可追问方向。`)}','${jsArg(preferredAgent)}')`},
+    {label:'查看语义资产',onclick:`openSemanticFiltered('${jsArg(kbName)}','')`},
+    {label:'查看审计',onclick:`openAuditFiltered('${jsArg(kb.id)}')`},
+    {label:'创建接入任务',onclick:`setCodexDraft('${jsArg(`完善知识库接入：${kbName}`)}','${jsArg(`检查知识库 ${kb.id} 的 Adapter 绑定、版本展示、Agent 引用和审计链路，保持权限、Trace 和外部知识源边界不退化。`)}')`}
+  ]);
   return `<div class="knowledge-detail">
     <div class="card-heading"><div><h3>${esc(kb.name||kb.id)}</h3><p class="muted">${esc(kb.backend_type||'mock')} · ${esc(kb.type||'document')} · ${esc(kb.owner_id||'-')}</p></div>${statusTag(kb.status||'active')}</div>
     <p>${esc(kb.description||'暂无说明')}</p>
     <div class="knowledge-meta">${tag(kb.id)}${kb.adapter_id?tag(kb.adapter_id,'green'):tag('no adapter','amber')}${tag(`${versions.length} versions`)}</div>
+    ${actions}
     <h4>版本</h4>${renderTable(versions,{columns:['version','status','checksum','created_at','id'],compact:true,limit:20})}
     <h4>Agent 引用</h4>${bound.length?renderTable(bound,{columns:['name','type','status','risk_level','adapter_id'],compact:true,limit:20}):stateBanner('warn','未发现直接绑定 Agent','当前只能按 adapter_id 推断引用关系；没有匹配的 Agent。')}
   </div>`;
@@ -1787,10 +2014,18 @@ function auditFilters(logs){
 function auditDetailHtml(log){
   if(!log) return emptyState('未选择事件','点击最近事件可查看 detail_json、request_id 和 Trace pivot。');
   const traceId=auditTraceId(log);
+  const objectLabel=`${log.object_type||'object'} ${log.object_id||''}`.trim();
+  const auditActions=contextActionStrip([
+    {label:'分析该事件',onclick:`setAnalysisDraft('${jsArg(`分析审计事件 ${log.id||''}：动作 ${log.action||'-'}，对象 ${objectLabel || '-'}，请判断风险、影响范围和后续处置。`)}','agent_business_analysis')`},
+    {label:'继续追问',onclick:`setChatDraft('${jsArg(`解释审计事件 ${log.id||''}：${log.action||'-'} / ${objectLabel || '-'}，并说明关联 Trace 和权限含义。`)}','agent_router')`},
+    {label:'打开相关对象',onclick:`openRelatedResource('${jsArg(log.object_type||'')}','${jsArg(log.object_id||'')}')`},
+    {label:'创建加固任务',onclick:`setCodexDraft('${jsArg(`审计事件加固：${log.action||'audit'}`)}','${jsArg(`围绕审计事件 ${log.id||''}（${log.action||'-'} / ${objectLabel || '-'}）检查相关前后端链路、Trace 展示、权限边界和审计记录，不要弱化 RBAC、SQL Guard 或审批流程。`)}')`}
+  ]);
   return `<div class="audit-detail">
     <div class="card-heading"><div><h3>${esc(displayValue(log.action))}</h3><p class="muted">${esc(log.user_id||'anonymous')} · ${esc(timeText(log.created_at))}</p></div>${tag(log.id||'audit')}</div>
     <div class="config-mini"><div class="row"><span>Object</span><b>${esc(log.object_type||'-')} / ${esc(log.object_id||'-')}</b></div><div class="row"><span>Request</span><b>${esc(log.request_id||'-')}</b></div><div class="row"><span>IP</span><b>${esc(log.ip||'-')}</b></div></div>
     ${traceId?traceActions(traceId,'openAuditTrace'):stateBanner('warn','未发现 Trace pivot','该事件 detail_json 中没有 trace_id。')}
+    ${auditActions}
     <details open><summary>detail_json</summary><pre class="code">${esc(JSON.stringify(log.detail_json||{},null,2))}</pre></details>
   </div>`;
 }
