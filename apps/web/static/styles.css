@@ -602,11 +602,12 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .rail-title{font-size:12px;font-weight:900;color:#7d786d;margin:2px 4px;text-transform:uppercase}
 .session-controls{display:grid;gap:8px}
 .session-controls input{min-height:36px;padding:8px 10px}
-.session-filter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.session-filter{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
 .session-filter button{background:#fff;color:#4b4842;border:1px solid var(--line);border-radius:999px;padding:7px 8px;box-shadow:none;font-size:12px}
 .session-filter button.active{background:#171717;color:#fff;border-color:#171717}
 .session-item{display:grid;gap:8px;width:100%;text-align:left;background:#fff;color:#2d2d2a;border:1px solid transparent;border-radius:12px;padding:8px;box-shadow:none}
 .session-item:hover,.session-item.active{background:#f5f4ef;border-color:#e1ded6;transform:none;filter:none}
+.session-item.linked{background:#f6fbf7;border-color:#cfe8dc}
 .session-item.archived{opacity:.76}
 .session-open{display:grid;gap:3px;width:100%;text-align:left;background:transparent;color:#2d2d2a;border:0;border-radius:8px;padding:2px;box-shadow:none}
 .session-open:hover{background:transparent;color:#2d2d2a;filter:none;transform:none}
@@ -615,6 +616,7 @@ button.ghost,.prompt-pill{background:#fff;color:#2d2d2a;border-color:#e1ded6}
 .session-actions{display:flex;gap:6px;flex-wrap:wrap}
 .session-actions button{background:#fff;color:#6b6b62;border:1px solid var(--line);border-radius:999px;padding:5px 8px;box-shadow:none;font-size:11px}
 .session-actions button:hover{background:#171717;color:#fff;border-color:#171717;filter:none;transform:none}
+.session-actions button:disabled{color:#0d6d58;background:#eef8f3;border-color:#cfe8dc;cursor:not-allowed}
 .context-card{border-top:1px solid var(--line);padding-top:12px;margin-top:auto}
 .context-card>b{display:block;margin-bottom:8px}
 .context-pack-card{display:grid;gap:9px;border:1px solid var(--line);border-radius:14px;background:#fbfaf7;padding:12px;min-width:0}

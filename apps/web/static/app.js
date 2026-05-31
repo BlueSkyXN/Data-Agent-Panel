@@ -1644,9 +1644,10 @@ function renderChat(){
         <div class="rail-title">会话库</div>
         <input id="sessionSearch" placeholder="搜索会话" value="${esc(chatSessionFilter.q)}" oninput="chatSessionFilter.q=this.value;renderSessionList()" aria-label="搜索会话"/>
         <div class="session-filter" role="tablist" aria-label="会话状态">
-          <button class="${chatSessionFilter.status==='active'?'active':''}" onclick="setSessionFilter('active',this)">活跃</button>
-          <button class="${chatSessionFilter.status==='archived'?'active':''}" onclick="setSessionFilter('archived',this)">归档</button>
-          <button class="${chatSessionFilter.status==='all'?'active':''}" onclick="setSessionFilter('all',this)">全部</button>
+          <button data-status="active" class="${chatSessionFilter.status==='active'?'active':''}" onclick="setSessionFilter('active',this)">活跃</button>
+          <button data-status="project" class="${chatSessionFilter.status==='project'?'active':''}" onclick="setSessionFilter('project',this)">项目</button>
+          <button data-status="archived" class="${chatSessionFilter.status==='archived'?'active':''}" onclick="setSessionFilter('archived',this)">归档</button>
+          <button data-status="all" class="${chatSessionFilter.status==='all'?'active':''}" onclick="setSessionFilter('all',this)">全部</button>
         </div>
       </div>
       <div id="chatSessionList">${inlineLoading('正在读取会话')}</div>
@@ -1890,6 +1891,7 @@ function syncContextPackPanel(){
   const panel=document.getElementById('contextPackPanel');
   if(panel) panel.outerHTML=renderContextPackPanel();
   syncChatContextBar();
+  renderSessionList();
 }
 function persistContextPack(opts={}){
   contextPack=normalizeContextPack(contextPack);
@@ -2520,22 +2522,26 @@ function selectedChatContext(){
 }
 function setSessionFilter(status,btn){
   chatSessionFilter.status=status;
-  document.querySelectorAll('.session-filter button').forEach(b=>b.classList.toggle('active',b===btn||b.textContent.includes(status==='active'?'活跃':status==='archived'?'归档':'全部')));
+  document.querySelectorAll('.session-filter button').forEach(b=>b.classList.toggle('active',b===btn||b.dataset.status===status));
   renderSessionList();
 }
 function sessionMatches(s){
   const status=chatSessionFilter.status||'active';
   const q=(chatSessionFilter.q||'').trim().toLowerCase();
-  const okStatus=status==='all' || (s.status||'active')===status;
-  const haystack=[s.title,s.id,s.agent_id,s.status].filter(Boolean).join(' ').toLowerCase();
+  const pack=normalizeContextPack(contextPack);
+  const okStatus=status==='all'
+    || (status==='project' ? Boolean(pack.sessionId && s.id===pack.sessionId) : (s.status||'active')===status);
+  const haystack=[s.title,s.id,s.agent_id,s.status,pack.sessionId===s.id?'project context pack':''].filter(Boolean).join(' ').toLowerCase();
   return okStatus && (!q || haystack.includes(q));
 }
 function sessionCard(s){
   const archived=(s.status||'active')==='archived';
-  return `<article class="session-item ${s.id===activeSessionId?'active':''} ${archived?'archived':''}">
-    <button class="session-open" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))} · ${esc(s.agent_id||'auto')}</span></button>
+  const linked=normalizeContextPack(contextPack).sessionId===s.id;
+  return `<article class="session-item ${s.id===activeSessionId?'active':''} ${archived?'archived':''} ${linked?'linked':''}">
+    <button class="session-open" onclick="loadChatSession('${jsArg(s.id)}')"><b>${esc(sessionTitle(s))}</b><span>${esc(timeText(s.updated_at))} · ${esc(s.agent_id||'auto')}${linked?' · 工作包':''}</span></button>
     <div class="session-actions">
       <button title="重命名会话" onclick="renameChatSession('${jsArg(s.id)}',this)">改名</button>
+      <button title="${linked?'已绑定到工作包':'绑定到当前工作包'}" onclick="bindSessionToContextPack('${jsArg(s.id)}',this)" ${linked?'disabled':''}>${linked?'已绑定':'绑定'}</button>
       <button title="${archived?'恢复会话':'归档会话'}" onclick="toggleChatSessionArchive('${jsArg(s.id)}',${archived},this)">${archived?'恢复':'归档'}</button>
     </div>
   </article>`;
@@ -2544,7 +2550,10 @@ function renderSessionList(){
   const box=document.getElementById('chatSessionList');
   if(!box) return;
   const filtered=chatSessions.filter(sessionMatches);
-  box.innerHTML=filtered.length?filtered.slice(0,40).map(sessionCard).join(''):emptyState('暂无匹配会话','调整搜索或切换活跃/归档状态。');
+  const empty=chatSessionFilter.status==='project'
+    ? emptyState('暂无项目会话','在任一会话卡片点击“绑定”，或加载含来源会话的工作包预设。')
+    : emptyState('暂无匹配会话','调整搜索或切换活跃/归档状态。');
+  box.innerHTML=filtered.length?filtered.slice(0,40).map(sessionCard).join(''):empty;
 }
 async function refreshChatSessions(){
   chatSessions=await api('/api/sessions').catch(()=>[]);
@@ -2596,6 +2605,17 @@ async function toggleChatSessionArchive(id,isArchived,btn){
     toast(isArchived?'会话已恢复':'会话已归档');
   }catch(e){
     toast('会话状态更新失败：'+e.message);
+  }
+}
+function bindSessionToContextPack(id,btn){
+  if(!id) return;
+  setBusy(btn,true);
+  try{
+    contextPack.sessionId=id;
+    contextPack.updatedAt=new Date().toISOString();
+    persistContextPack({toast:'会话已绑定到当前工作包'});
+  }finally{
+    setBusy(btn,false);
   }
 }
 function startNewChat(){
