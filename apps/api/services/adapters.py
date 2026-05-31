@@ -31,6 +31,27 @@ def _safe_json(value: Any) -> str:
         return json.dumps({"unserializable": True}, ensure_ascii=False)
 
 
+def _redact_local_file_content(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_redact_local_file_content(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    redacted = {key: _redact_local_file_content(item) for key, item in value.items()}
+    context_pack = redacted.get("context_pack")
+    if isinstance(context_pack, dict) and isinstance(context_pack.get("local_files"), list):
+        safe_files = []
+        for item in context_pack["local_files"]:
+            if not isinstance(item, dict):
+                continue
+            safe_item = dict(item)
+            content = str(safe_item.pop("content", "") or "")
+            safe_item["content_chars"] = len(content)
+            safe_item["content_redacted"] = bool(content)
+            safe_files.append(safe_item)
+        context_pack["local_files"] = safe_files
+    return redacted
+
+
 def _table_payload(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     columns = list(rows[0].keys()) if rows else []
     return {"name": name, "columns": columns, "rows": rows}
@@ -409,8 +430,9 @@ def call_generic_http(adapter: dict[str, Any], payload: dict[str, Any], trace_id
         raise HTTPException(status_code=502, detail=f"External agent call failed: {exc}")
     finally:
         duration = int((time.time() - start) * 1000)
-        db.insert("tool_calls", {"id": db.new_id("call"), "trace_id": trace_id, "adapter_id": adapter["id"], "request_json": _safe_json(payload), "response_json": _safe_json(response_json), "status": status, "duration_ms": duration, "created_at": db.now()})
-        trace_service.add_step(trace_id, "tool_call", "generic_http", payload, {"endpoint": endpoint, "duration_ms": duration, "status": status})
+        safe_payload = _redact_local_file_content(payload)
+        db.insert("tool_calls", {"id": db.new_id("call"), "trace_id": trace_id, "adapter_id": adapter["id"], "request_json": _safe_json(safe_payload), "response_json": _safe_json(response_json), "status": status, "duration_ms": duration, "created_at": db.now()})
+        trace_service.add_step(trace_id, "tool_call", "generic_http", safe_payload, {"endpoint": endpoint, "duration_ms": duration, "status": status})
     return normalize_agent_result(response_json, trace_id)
 
 

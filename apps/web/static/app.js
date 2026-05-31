@@ -49,6 +49,9 @@ let commandAssetsLoaded = false;
 let contextPackAssetFilterState = {q:'', type:'all'};
 const CONTEXT_PACK_STORAGE_KEY = 'dap_context_pack_v1';
 const CONTEXT_PACK_PRESETS_STORAGE_KEY = 'dap_context_pack_presets_v1';
+const CONTEXT_PACK_FILE_LIMIT = 4;
+const CONTEXT_PACK_FILE_CHAR_LIMIT = 12000;
+const CONTEXT_PACK_FILE_BYTES_LIMIT = 262144;
 let contextPack = loadContextPack();
 let contextPackPresets = loadContextPackPresets();
 let activeContextPackPresetId = '';
@@ -149,10 +152,27 @@ function compactTags(values,limit=4){
   return list.length?list.map(v=>tag(v)).join(''):'<span class="muted">暂无标签</span>';
 }
 function defaultContextPack(){
-  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',sessionIds:[],toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
+  return {name:'默认工作包',instructions:'',agentId:'',datasetIds:[],knowledgeBaseIds:[],reportIds:[],traceIds:[],sessionId:'',sessionIds:[],localFiles:[],toolMode:'auto',evidenceDepth:'standard',memoryMode:'project',includeCanvas:false,updatedAt:''};
 }
 function normalizeIdList(list,limit=6){
   return [...new Set(asList(list).map(v=>String(v||'').trim()).filter(Boolean))].slice(0,limit);
+}
+function contextPackFileId(name='file'){
+  const stem=String(name||'file').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,30)||'file';
+  return `file_${stem}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`;
+}
+function normalizeContextFile(file={}){
+  return {
+    id:String(file.id||contextPackFileId(file.name)).slice(0,90),
+    name:short(String(file.name||'本地资料').trim()||'本地资料',80),
+    type:short(String(file.type||'text/plain').trim()||'text/plain',80),
+    size:Number.isFinite(Number(file.size))?Number(file.size):String(file.content||'').length,
+    content:String(file.content||'').slice(0,CONTEXT_PACK_FILE_CHAR_LIMIT),
+    createdAt:String(file.createdAt||new Date().toISOString()).slice(0,40)
+  };
+}
+function normalizeContextFiles(files){
+  return (Array.isArray(files)?files:[]).map(normalizeContextFile).filter(f=>f.name&&f.content).slice(0,CONTEXT_PACK_FILE_LIMIT);
 }
 function normalizeContextPack(pack={}){
   const base=defaultContextPack();
@@ -167,6 +187,7 @@ function normalizeContextPack(pack={}){
   next.sessionId=String(next.sessionId||'').slice(0,90);
   next.sessionIds=normalizeIdList([next.sessionId,...asList(next.sessionIds)],8);
   next.sessionId=String(next.sessionId||next.sessionIds[0]||'').slice(0,90);
+  next.localFiles=normalizeContextFiles(next.localFiles);
   next.toolMode=['auto','analysis','sql','codex'].includes(next.toolMode)?next.toolMode:'auto';
   next.evidenceDepth=['standard','full'].includes(next.evidenceDepth)?next.evidenceDepth:'standard';
   next.memoryMode=['default','project'].includes(next.memoryMode)?next.memoryMode:'project';
@@ -210,7 +231,7 @@ function persistContextPackPresets(){
 }
 function contextPackHasContent(pack=contextPack){
   const p=normalizeContextPack(pack);
-  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionIds.length||(p.includeCanvas&&chatCanvasValue().trim()));
+  return Boolean(p.instructions.trim()||p.agentId||p.datasetIds.length||p.knowledgeBaseIds.length||p.reportIds.length||p.traceIds.length||p.sessionIds.length||p.localFiles.length||(p.includeCanvas&&chatCanvasValue().trim()));
 }
 function asList(value){
   if(Array.isArray(value)) return value;
@@ -1811,6 +1832,7 @@ function composerContextMenuHtml(){
       <button type="button" onclick="runComposerContextAction('capture')"><b>捕获当前</b><span>Agent / 数据集 / Trace</span></button>
       <button type="button" onclick="runComposerContextAction('apply')"><b>应用工作包</b><span>写入当前提问</span></button>
       <button type="button" onclick="runComposerContextAction('canvas')"><b>写入 Canvas</b><span>整理为上下文 brief</span></button>
+      <label class="composer-context-upload" tabindex="0" onkeydown="triggerFileUploadKey(event)"><input type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,text/*" onchange="addContextFiles(this.files,this)"/><b>加入资料</b><span>文本/Markdown/CSV/JSON</span></label>
     </div>
     <div class="composer-context-options" aria-label="上下文边界">
       <span>记忆</span>
@@ -1874,6 +1896,49 @@ function runComposerContextAction(action){
   if(action==='canvas') writeContextPackToCanvas();
   renderComposerContextMenu(false);
 }
+function triggerFileUploadKey(event){
+  if(event.key!=='Enter'&&event.key!==' ') return;
+  event.preventDefault();
+  event.currentTarget?.querySelector('input[type="file"]')?.click();
+}
+function fileSizeLabel(size=0){
+  const n=Number(size)||0;
+  if(n>=1024*1024) return `${(n/1024/1024).toFixed(1)} MB`;
+  if(n>=1024) return `${Math.round(n/1024)} KB`;
+  return `${n} B`;
+}
+function canReadContextFile(file){
+  const name=String(file?.name||'').toLowerCase();
+  const type=String(file?.type||'').toLowerCase();
+  return type.startsWith('text/') || /\.(txt|md|markdown|csv|json|log|yaml|yml)$/i.test(name);
+}
+async function addContextFiles(fileList,input){
+  const files=Array.from(fileList||[]).slice(0,CONTEXT_PACK_FILE_LIMIT);
+  if(!files.length) return;
+  const accepted=[];
+  const rejected=[];
+  for(const file of files){
+    if(!canReadContextFile(file)){
+      rejected.push(`${file.name} 类型不支持`);
+      continue;
+    }
+    if(file.size>CONTEXT_PACK_FILE_BYTES_LIMIT){
+      rejected.push(`${file.name} 超过 ${fileSizeLabel(CONTEXT_PACK_FILE_BYTES_LIMIT)}`);
+      continue;
+    }
+    const content=await file.text();
+    accepted.push(normalizeContextFile({name:file.name,type:file.type||'text/plain',size:file.size,content,createdAt:new Date().toISOString()}));
+  }
+  if(accepted.length){
+    contextPack.localFiles=normalizeContextFiles([...accepted,...normalizeContextPack(contextPack).localFiles]);
+    contextPack.updatedAt=new Date().toISOString();
+    persistContextPack({toast:`已加入 ${accepted.length} 个本地资料`});
+  }
+  if(rejected.length) toast(rejected.slice(0,2).join('；'));
+  if(input) input.value='';
+  const menu=document.getElementById('composerContextMenu');
+  if(menu&&!menu.classList.contains('hidden')) renderComposerContextMenu(false);
+}
 function contextPackCounts(){
   const p=normalizeContextPack(contextPack);
   return {
@@ -1882,13 +1947,14 @@ function contextPackCounts(){
     reports:p.reportIds.length,
     traces:p.traceIds.length,
     sessions:p.sessionIds.length,
+    files:p.localFiles.length,
     instructions:p.instructions.trim()?1:0,
     canvas:p.includeCanvas&&chatCanvasValue().trim()?1:0
   };
 }
 function contextPackSummaryLabel(){
   const counts=contextPackCounts();
-  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.sessions+counts.instructions+counts.canvas+(contextPack.agentId?1:0);
+  const total=counts.datasets+counts.knowledge+counts.reports+counts.traces+counts.sessions+counts.files+counts.instructions+counts.canvas+(contextPack.agentId?1:0);
   return total?`${total} 项上下文`:'未捕获';
 }
 function contextPackSummaryDetail(){
@@ -1901,6 +1967,7 @@ function contextPackSummaryDetail(){
   if(counts.knowledge) parts.push(`${counts.knowledge} 知识库`);
   if(counts.reports) parts.push(`${counts.reports} 报告`);
   if(counts.traces) parts.push(`${counts.traces} Trace`);
+  if(counts.files) parts.push(`${counts.files} 本地资料`);
   if(counts.canvas) parts.push('Canvas');
   if(counts.sessions) parts.push(`${counts.sessions} 会话`);
   return parts.length?parts.join(' · '):'Project-style local context';
@@ -1921,10 +1988,11 @@ function contextPackPills(){
   p.reportIds.forEach(id=>pills.push({kind:'report',id,label:'报告',value:contextPackReportTitle(id)}));
   p.traceIds.forEach(id=>pills.push({kind:'trace',id,label:'Trace',value:id}));
   p.sessionIds.forEach(id=>pills.push({kind:'session',id,label:'会话',value:id}));
+  p.localFiles.forEach(file=>pills.push({kind:'file',id:file.id,label:'本地资料',value:`${file.name} · ${fileSizeLabel(file.size)}`}));
   return pills.length?`<div class="context-pack-pills">${pills.map(pill=>`<article class="context-pack-pill">
     <div><small>${esc(pill.label)}</small><b>${esc(short(pill.value,34))}</b></div>
     <nav aria-label="${esc(pill.label)} 操作"><button type="button" onclick="openContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">打开</button><button type="button" onclick="removeContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">移除</button></nav>
-  </article>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话或添加资产后，这里会显示 Agent、数据集、知识库、Trace、报告和会话线索。</p>`;
+  </article>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话、添加资产或加入本地资料后，这里会显示 Agent、数据集、知识库、Trace、报告、会话和资料线索。</p>`;
 }
 function contextPackStatusText(){
   return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
@@ -2023,6 +2091,7 @@ function renderContextPackPanel(){
       <button type="button" class="${p.memoryMode==='default'?'active':''}" onclick="setContextPackMemoryMode('default')">默认</button>
     </div>
     <label class="context-pack-toggle"><input type="checkbox" ${p.includeCanvas?'checked':''} onchange="toggleContextPackCanvas(this.checked)"/><span>带 Canvas 草稿提问</span></label>
+    <label class="context-pack-file-upload" tabindex="0" onkeydown="triggerFileUploadKey(event)"><input type="file" multiple accept=".txt,.md,.markdown,.csv,.json,.log,.yaml,.yml,text/*" onchange="addContextFiles(this.files,this)"/><span>加入本地资料</span><small>仅浏览器本地读取，最多 ${CONTEXT_PACK_FILE_LIMIT} 个文本文件。</small></label>
     ${contextPackPills()}
     ${renderContextPackAssetPicker()}
     <div class="context-pack-actions">
@@ -2171,6 +2240,7 @@ function removeContextPackItem(kind,id){
   if(kind==='knowledge') contextPack.knowledgeBaseIds=removeId(contextPack.knowledgeBaseIds);
   if(kind==='report') contextPack.reportIds=removeId(contextPack.reportIds);
   if(kind==='trace') contextPack.traceIds=removeId(contextPack.traceIds);
+  if(kind==='file') contextPack.localFiles=normalizeContextFiles(contextPack.localFiles.filter(file=>file.id!==id));
   if(kind==='session'){
     contextPack.sessionIds=removeId(asList(contextPack.sessionIds));
     contextPack.sessionId=contextPack.sessionIds[0]||'';
@@ -2185,6 +2255,12 @@ function openContextPackItem(kind,id){
   if(kind==='report') return openReportCommand(id);
   if(kind==='trace'){ showPage('chat'); setTimeout(()=>openTrace(id),120); return; }
   if(kind==='session') return openSessionCommand(id);
+  if(kind==='file'){
+    const file=normalizeContextPack(contextPack).localFiles.find(f=>f.id===id);
+    if(!file) return toast('本地资料不存在');
+    showPage('chat');
+    setTimeout(()=>setChatCanvasDraft(`# 本地资料：${file.name}\n\n${file.content}`,'本地资料已写入 Canvas'),120);
+  }
 }
 function addTraceToContextPack(traceId,btn){
   if(!traceId) return;
@@ -2212,6 +2288,10 @@ function contextPackPrompt(){
   if(p.datasetIds.length) lines.push(`数据集：${p.datasetIds.map(datasetName).join('、')}`);
   if(p.knowledgeBaseIds.length) lines.push(`知识库：${p.knowledgeBaseIds.map(knowledgeBaseName).join('、')}`);
   if(p.reportIds.length) lines.push(`报告：${p.reportIds.map(id=>short(contextPackReportTitle(id),42)).join('、')}`);
+  if(p.localFiles.length){
+    lines.push('', '本地资料：');
+    p.localFiles.forEach(file=>lines.push(`- ${file.name} (${fileSizeLabel(file.size)})：${short(file.content.replace(/\s+/g,' '),900)}`));
+  }
   if(p.traceIds.length) lines.push(`Trace：${p.traceIds.join('、')}`);
   if(p.sessionIds.length) lines.push(`来源会话：${p.sessionIds.join('、')}`);
   if(p.includeCanvas&&chatCanvasValue().trim()) lines.push(`Canvas 草稿：${short(chatCanvasValue().trim().replace(/\s+/g,' '),520)}`);
@@ -2227,6 +2307,7 @@ function contextPackCanvasMarkdown(){
   if(p.datasetIds.length) lines.push('## 数据集',...p.datasetIds.map(id=>`- ${datasetName(id)} (${id})`),'');
   if(p.knowledgeBaseIds.length) lines.push('## 知识库',...p.knowledgeBaseIds.map(id=>`- ${knowledgeBaseName(id)} (${id})`),'');
   if(p.reportIds.length) lines.push('## 报告',...p.reportIds.map(id=>`- ${contextPackReportTitle(id)} (${id})`),'');
+  if(p.localFiles.length) lines.push('## 本地资料',...p.localFiles.flatMap(file=>[`### ${file.name}`,`大小：${fileSizeLabel(file.size)}；类型：${file.type}`,'',file.content.slice(0,3000),'']),'');
   if(p.traceIds.length) lines.push('## Trace',...p.traceIds.map(id=>`- ${id}`),'');
   if(p.sessionIds.length) lines.push('## 来源会话',...p.sessionIds.map(id=>`- ${id}`),'');
   if(p.includeCanvas&&chatCanvasValue().trim()) lines.push('## Canvas 草稿',chatCanvasValue().trim().slice(0,3000),'');
@@ -2241,6 +2322,7 @@ function contextPackPayload(){
     dataset_ids:p.datasetIds,
     knowledge_base_ids:p.knowledgeBaseIds,
     report_ids:p.reportIds,
+    local_files:p.localFiles.map(file=>({id:file.id,name:file.name,type:file.type,size:file.size,content:file.content.slice(0,6000),created_at:file.createdAt})),
     trace_ids:p.traceIds,
     session_id:p.sessionId||null,
     session_ids:p.sessionIds,

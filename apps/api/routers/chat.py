@@ -16,6 +16,24 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 settings = get_settings()
 
 
+def _context_pack_local_file_summary(context: dict | None) -> list[dict]:
+    context_pack = (context or {}).get("context_pack") or {}
+    files = context_pack.get("local_files") or []
+    summary = []
+    for item in files[:8]:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "")
+        summary.append({
+            "id": str(item.get("id") or "")[:90],
+            "name": str(item.get("name") or "本地资料")[:120],
+            "type": str(item.get("type") or "")[:80],
+            "size": item.get("size"),
+            "content_chars": len(content),
+        })
+    return summary
+
+
 @router.post("/query")
 def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current_user)):
     check_rate_limit(f"chat:{user['id']}", settings.chat_rate_limit_per_minute)
@@ -42,6 +60,15 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
     if not temporary_chat:
         db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "user", "content": payload.message, "content_type": "text", "created_at": db.now()})
     trace_id = trace_service.create_trace(user["id"], payload.message, agent_id=agent["id"], session_id=session_id, agent_version=version["version"], request_id=getattr(request.state, "request_id", ""))
+    local_file_summary = _context_pack_local_file_summary(payload.context)
+    if local_file_summary:
+        trace_service.add_step(
+            trace_id,
+            "context_pack",
+            "local_file_context",
+            {"local_files_count": len(local_file_summary), "has_local_file_content": True},
+            {"local_files": local_file_summary, "temporary_chat": temporary_chat},
+        )
     start = time.time()
     try:
         output = adapters.call_adapter(agent, version, payload.message, trace_id, payload.context, user=user)
