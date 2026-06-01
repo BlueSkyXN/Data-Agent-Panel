@@ -55,6 +55,141 @@ def _deduplicate_columns(headers: list[str]) -> list[str]:
     return out
 
 
+def _sqlite_value(value: Any) -> Any:
+    return json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value
+
+
+def _insert_with_connection(con, table: str, payload: dict[str, Any]) -> None:
+    keys = list(payload.keys())
+    placeholders = ",".join(["?"] * len(keys))
+    values = [_sqlite_value(value) for value in payload.values()]
+    con.execute(f"INSERT INTO {table} ({','.join(keys)}) VALUES ({placeholders})", values)
+
+
+def _update_with_connection(con, table: str, key: str, value: str, payload: dict[str, Any]) -> None:
+    pairs = ",".join([f"{column}=?" for column in payload.keys()])
+    values = [_sqlite_value(item) for item in payload.values()]
+    values.append(value)
+    con.execute(f"UPDATE {table} SET {pairs} WHERE {key}=?", values)
+
+
+def _drop_business_table(table: str) -> None:
+    quoted_table = _quote_identifier(table)
+    with db.connect(db.BUSINESS_DB_PATH) as con:
+        con.execute(f"DROP TABLE IF EXISTS {quoted_table}")
+
+
+def _mark_import_job_failed(job_id: str, error_message: str) -> None:
+    try:
+        db.update(
+            "data_import_jobs",
+            "id",
+            job_id,
+            {
+                "status": "failed",
+                "error_message": error_message[:1000],
+                "finished_at": db.now(),
+            },
+        )
+    except Exception:
+        return
+
+
+def _persist_csv_import_metadata(
+    *,
+    job_id: str,
+    dataset_id: str,
+    dataset_name: str,
+    business_domain: str,
+    table: str,
+    original_columns: list[str],
+    safe_columns: list[str],
+    filename: str,
+    row_count: int,
+    user: dict,
+    request: Request | None,
+) -> None:
+    timestamp = db.now()
+    request_id = getattr(request.state, "request_id", "") if request else ""
+    ip = request.client.host if request and request.client else ""
+    with db.connect() as con:
+        _insert_with_connection(
+            con,
+            "datasets",
+            {
+                "id": dataset_id,
+                "name": dataset_name,
+                "business_domain": business_domain,
+                "source_id": "ds_business_sqlite",
+                "physical_table": table,
+                "description": f"Imported from {filename}",
+                "refresh_mode": "manual",
+                "data_classification": "internal",
+                "status": "active",
+            },
+        )
+        for original, safe in zip(original_columns, safe_columns):
+            _insert_with_connection(
+                con,
+                "dataset_fields",
+                {
+                    "id": db.new_id("field"),
+                    "dataset_id": dataset_id,
+                    "field_name": safe,
+                    "display_name": original or safe,
+                    "field_type": "dimension",
+                    "semantic_type": "dimension",
+                    "description": "CSV imported field",
+                    "default_aggregation": "",
+                    "is_sensitive": 0,
+                    "is_filterable": 1,
+                    "is_groupable": 1,
+                },
+            )
+        # Grant the importer read access immediately; admins also pass through RBAC.
+        _insert_with_connection(
+            con,
+            "dataset_permissions",
+            {
+                "id": db.new_id("dperm"),
+                "dataset_id": dataset_id,
+                "subject_type": "user",
+                "subject_id": user["id"],
+                "permission": "read",
+                "row_filter": None,
+                "masked_fields": [],
+            },
+        )
+        _update_with_connection(
+            con,
+            "data_import_jobs",
+            "id",
+            job_id,
+            {
+                "dataset_id": dataset_id,
+                "status": "success",
+                "row_count": row_count,
+                "error_message": "",
+                "finished_at": timestamp,
+            },
+        )
+        _insert_with_connection(
+            con,
+            "audit_logs",
+            {
+                "id": db.new_id("audit"),
+                "user_id": user.get("id"),
+                "action": "import_csv",
+                "object_type": "dataset",
+                "object_id": dataset_id,
+                "detail_json": {"filename": filename, "rows": row_count, "columns": safe_columns},
+                "ip": ip,
+                "request_id": request_id,
+                "created_at": timestamp,
+            },
+        )
+
+
 @router.post("/query")
 def query_data(payload: DataQueryRequest, request: Request, user: dict = Depends(get_current_user)):
     trace_id = trace_service.create_trace(user["id"], payload.sql, agent_id="data_query_api", request_id=getattr(request.state, "request_id", ""))
@@ -181,7 +316,10 @@ async def import_csv(dataset_name: str, business_domain: str = "Imported", file:
     raw = await file.read()
     if len(raw) > _MAX_CSV_BYTES:
         raise HTTPException(status_code=400, detail=f"CSV file too large; max {_MAX_CSV_BYTES} bytes")
-    text = raw.decode("utf-8-sig")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded") from exc
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames:
         raise HTTPException(status_code=400, detail="CSV header is required")
@@ -198,21 +336,66 @@ async def import_csv(dataset_name: str, business_domain: str = "Imported", file:
     safe_cols = _deduplicate_columns(original_cols)
     quoted_table = _quote_identifier(table)
     quoted_cols = [_quote_identifier(c) for c in safe_cols]
-
-    with db.connect(db.BUSINESS_DB_PATH) as con:
-        con.execute(f"CREATE TABLE {quoted_table} ({','.join([c + ' TEXT' for c in quoted_cols])})")
-        placeholders = ",".join(["?"] * len(safe_cols))
-        con.executemany(
-            f"INSERT INTO {quoted_table} ({','.join(quoted_cols)}) VALUES ({placeholders})",
-            [[r.get(c, "") for c in original_cols] for r in rows],
-        )
     dsid = db.new_id("dataset")
-    db.insert("datasets", {"id": dsid, "name": dataset_name, "business_domain": business_domain, "source_id": "ds_business_sqlite", "physical_table": table, "description": f"Imported from {file.filename}", "refresh_mode": "manual", "data_classification": "internal", "status": "active"})
-    for original, safe in zip(original_cols, safe_cols):
-        db.insert("dataset_fields", {"id": db.new_id("field"), "dataset_id": dsid, "field_name": safe, "display_name": original or safe, "field_type": "dimension", "semantic_type": "dimension", "description": "CSV imported field", "default_aggregation": "", "is_sensitive": 0, "is_filterable": 1, "is_groupable": 1})
-    # Grant the importer read access immediately; admins also pass through RBAC.
-    db.insert("dataset_permissions", {"id": db.new_id("dperm"), "dataset_id": dsid, "subject_type": "user", "subject_id": user["id"], "permission": "read", "row_filter": None, "masked_fields": []})
     job_id = db.new_id("import")
-    db.insert("data_import_jobs", {"id": job_id, "source_type": "csv", "dataset_id": dsid, "filename": file.filename, "status": "success", "row_count": len(rows), "error_message": "", "created_by": user["id"], "created_at": db.now(), "finished_at": db.now()})
-    audit("import_csv", user, "dataset", dsid, {"filename": file.filename, "rows": len(rows), "columns": safe_cols}, request)
+    filename = file.filename or ""
+    db.insert(
+        "data_import_jobs",
+        {
+            "id": job_id,
+            "source_type": "csv",
+            "dataset_id": dsid,
+            "filename": filename,
+            "status": "pending",
+            "row_count": 0,
+            "error_message": "",
+            "created_by": user["id"],
+            "created_at": db.now(),
+            "finished_at": None,
+        },
+    )
+    business_table_created = False
+    try:
+        with db.connect(db.BUSINESS_DB_PATH) as con:
+            con.execute(f"CREATE TABLE {quoted_table} ({','.join([c + ' TEXT' for c in quoted_cols])})")
+            placeholders = ",".join(["?"] * len(safe_cols))
+            con.executemany(
+                f"INSERT INTO {quoted_table} ({','.join(quoted_cols)}) VALUES ({placeholders})",
+                [[r.get(c, "") for c in original_cols] for r in rows],
+            )
+        business_table_created = True
+        _persist_csv_import_metadata(
+            job_id=job_id,
+            dataset_id=dsid,
+            dataset_name=dataset_name,
+            business_domain=business_domain,
+            table=table,
+            original_columns=original_cols,
+            safe_columns=safe_cols,
+            filename=filename,
+            row_count=len(rows),
+            user=user,
+            request=request,
+        )
+    except Exception as exc:
+        cleanup_error = ""
+        if business_table_created:
+            try:
+                _drop_business_table(table)
+            except Exception as cleanup_exc:
+                cleanup_error = f"; cleanup failed: {cleanup_exc}"
+        error_message = f"{exc}{cleanup_error}"
+        _mark_import_job_failed(job_id, error_message)
+        try:
+            audit(
+                "import_csv_failed",
+                user,
+                "dataset",
+                dsid,
+                {"filename": filename, "table": table, "error": error_message[:500]},
+                request,
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="CSV import failed") from exc
     return {"job_id": job_id, "dataset_id": dsid, "table": table, "columns": safe_cols, "row_count": len(rows)}

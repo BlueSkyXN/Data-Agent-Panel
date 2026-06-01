@@ -398,11 +398,41 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS rate_limit_events (
+  id TEXT PRIMARY KEY,
+  bucket_key TEXT NOT NULL,
+  created_at_epoch REAL NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS platform_operation_runs (
+  id TEXT PRIMARY KEY,
+  operation TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  duration_ms INTEGER,
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE INDEX IF NOT EXISTS idx_traces_user_created ON traces(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_traces_created ON traces(created_at);
 CREATE INDEX IF NOT EXISTS idx_trace_steps_trace ON trace_steps(trace_id, step_no);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_sql_runs_trace ON sql_runs(trace_id);
+CREATE INDEX IF NOT EXISTS idx_chart_specs_trace ON chart_specs(trace_id);
+CREATE INDEX IF NOT EXISTS idx_tool_calls_trace ON tool_calls(trace_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_created ON tasks(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_events_bucket ON rate_limit_events(bucket_key, created_at_epoch);
+CREATE INDEX IF NOT EXISTS idx_rate_limit_events_created ON rate_limit_events(created_at_epoch);
+CREATE INDEX IF NOT EXISTS idx_platform_operation_runs_started ON platform_operation_runs(started_at);
+CREATE INDEX IF NOT EXISTS idx_platform_operation_runs_operation_started ON platform_operation_runs(operation, started_at);
 
 -- V0.3 full-agent + data capability + Codex nesting extensions
 CREATE TABLE IF NOT EXISTS semantic_terms (

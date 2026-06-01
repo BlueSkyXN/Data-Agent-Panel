@@ -197,9 +197,14 @@ def write_handoff_artifact(task_id: str) -> Path:
         raise HTTPException(status_code=404, detail="Codex task not found")
     settings.codex_task_dir.mkdir(parents=True, exist_ok=True)
     path = settings.codex_task_dir / f"{task_id}.md"
-    path.write_text(task["task_prompt"], encoding="utf-8")
-    if not db.many("SELECT id FROM codex_artifacts WHERE task_id=? AND artifact_type='handoff_md'", [task_id]):
-        db.insert("codex_artifacts", {"id": db.new_id("cxa"), "task_id": task_id, "artifact_type": "handoff_md", "path": str(path), "content": "", "created_at": db.now()})
+    content = task["task_prompt"]
+    path.write_text(content, encoding="utf-8")
+    artifact = db.one("SELECT id FROM codex_artifacts WHERE task_id=? AND artifact_type='handoff_md' ORDER BY created_at DESC LIMIT 1", [task_id])
+    payload = {"path": str(path), "content": content}
+    if artifact:
+        db.update("codex_artifacts", "id", artifact["id"], payload)
+    else:
+        db.insert("codex_artifacts", {"id": db.new_id("cxa"), "task_id": task_id, "artifact_type": "handoff_md", **payload, "created_at": db.now()})
     _event(task_id, task.get("mode") or "mock", "handoff_written", {"path": str(path)})
     return path
 

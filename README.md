@@ -114,6 +114,9 @@ DAP_DEMO_MODE=true
 DAP_ALLOW_DEMO_SEED=true
 DAP_CORS_ORIGINS=*
 DAP_CODEX_MODE=mock
+DAP_SQLITE_BACKUP_MAX_AGE_HOURS=168
+DAP_SQLITE_MIN_FREE_MB=256
+DAP_SQLITE_INIT_LOCK_TIMEOUT_SECONDS=30
 ```
 
 推荐 Space Secrets：
@@ -121,13 +124,18 @@ DAP_CODEX_MODE=mock
 ```env
 DAP_SECRET_KEY=<强随机密钥>
 DAP_OPS_TOKEN=<强随机运维只读 token>
+# 关闭 demo seed 后首次初始化管理员时临时设置，创建成功后移除：
+# DAP_BOOTSTRAP_ADMIN_USERNAME=<管理员用户名>
+# DAP_BOOTSTRAP_ADMIN_PASSWORD=<一次性强密码>
 ```
 
 `DAP_OPS_TOKEN` 未配置时，`/_ops/*` 诊断入口会在 Hugging Face / production 模式下锁定。Docker/HF 启动脚本会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但正式部署仍建议显式设置并保存在 Space Secrets 中。
 
 浏览器临时进入 ops 面时，可使用 `/_ops/?token=<DAP_OPS_TOKEN>` 换取 HttpOnly cookie，页面会跳回无 query 的 `/_ops/`，不会把完整 token 写入 HTML。CLI 和自动化优先使用 `X-Ops-Token`。
 
-如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；正式环境需要先通过受控流程预置管理员账号。
+如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；可在首次启动时临时设置 `DAP_BOOTSTRAP_ADMIN_USERNAME` / `DAP_BOOTSTRAP_ADMIN_PASSWORD`，后端会把管理员账号写入 SQLite 并授予 `admin` 角色。创建成功后应移除 bootstrap password，避免长期保留初始化 secret。
+
+HFS / SQLite 阶段不需要外部数据库；启动期 schema / seed 会通过 `DAP_DATA_DIR/.sqlite-init.lock` 串行化，`/_ops/persistence` 会暴露 schema、备份新鲜度、数据目录剩余空间和 SQLite 锁文件状态。
 
 部署后执行：
 

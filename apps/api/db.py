@@ -1,22 +1,34 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import sqlite3
+import time
 import urllib.parse
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .auth_utils import hash_secret
 from .config import ROOT, get_settings
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - HFS/Linux and local macOS both provide fcntl.
+    fcntl = None  # type: ignore[assignment]
+
 settings = get_settings()
 DATA_DIR = settings.data_dir
 DB_PATH = settings.db_path
 BUSINESS_DB_PATH = settings.business_db_path
 SCHEMA_PATH = ROOT / "database" / "schema.sql"
+SCHEMA_VERSION = 1
+SQLITE_INIT_LOCK_FILENAME = ".sqlite-init.lock"
+_JOURNAL_MODES = {"delete", "truncate", "persist", "memory", "wal", "off"}
+_SYNCHRONOUS_MODES = {"off", "normal", "full", "extra"}
 
 
 def now() -> str:
@@ -33,13 +45,92 @@ def ensure_data_dir() -> None:
     settings.codex_task_dir.mkdir(parents=True, exist_ok=True)
 
 
+class SQLiteInitLockTimeout(RuntimeError):
+    def __init__(self, lock_path: Path, timeout_seconds: float, holder: dict[str, Any] | None = None):
+        super().__init__(f"SQLite init lock is held: {lock_path}")
+        self.lock_path = lock_path
+        self.timeout_seconds = timeout_seconds
+        self.holder = holder or {}
+
+
+def _read_lock_holder(lock_file: Any) -> dict[str, Any]:
+    try:
+        lock_file.seek(0)
+        text = lock_file.read(4096).strip()
+        if not text:
+            return {}
+        loaded = json.loads(text)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def sqlite_init_lock_path() -> Path:
+    return settings.data_dir / SQLITE_INIT_LOCK_FILENAME
+
+
+@contextmanager
+def sqlite_init_lock(timeout_seconds: float | None = None):
+    ensure_data_dir()
+    lock_path = sqlite_init_lock_path().resolve()
+    timeout = settings.sqlite_init_lock_timeout_seconds if timeout_seconds is None else timeout_seconds
+    timeout = max(0.0, float(timeout))
+    if fcntl is None:
+        yield {"enabled": False, "path": str(lock_path), "reason": "fcntl_unavailable"}
+        return
+    deadline = time.monotonic() + timeout
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise SQLiteInitLockTimeout(lock_path, timeout, _read_lock_holder(lock_file)) from exc
+                time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+        metadata = {
+            "enabled": True,
+            "operation": "init_all",
+            "pid": os.getpid(),
+            "acquired_at": now(),
+            "path": str(lock_path),
+        }
+        try:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.write(json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n")
+            lock_file.flush()
+            os.fsync(lock_file.fileno())
+            yield metadata
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _sqlite_pragma_value(value: str, allowed: set[str], default: str) -> str:
+    normalized = (value or "").strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def _configure_connection(con: sqlite3.Connection, readonly: bool = False) -> None:
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute(f"PRAGMA busy_timeout = {max(0, settings.sqlite_busy_timeout_ms)}")
+    if readonly:
+        con.execute("PRAGMA query_only = ON")
+        return
+    journal_mode = _sqlite_pragma_value(settings.sqlite_journal_mode, _JOURNAL_MODES, "wal")
+    synchronous = _sqlite_pragma_value(settings.sqlite_synchronous, _SYNCHRONOUS_MODES, "normal")
+    con.execute(f"PRAGMA journal_mode = {journal_mode}")
+    con.execute(f"PRAGMA synchronous = {synchronous}")
+
+
 @contextmanager
 def connect(path: Path | str | None = None):
     ensure_data_dir()
     path = DB_PATH if path is None else path
     con = sqlite3.connect(str(path), check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
+    _configure_connection(con)
     try:
         yield con
         con.commit()
@@ -53,9 +144,7 @@ def connect_readonly(path: Path | str | None = None):
     path = DB_PATH if path is None else path
     uri_path = urllib.parse.quote(str(Path(path).resolve()), safe="/")
     con = sqlite3.connect(f"file:{uri_path}?mode=ro", uri=True, check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    con.execute("PRAGMA foreign_keys = ON")
-    con.execute("PRAGMA query_only = ON")
+    _configure_connection(con, readonly=True)
     try:
         yield con
     finally:
@@ -118,6 +207,61 @@ def _columns(con: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _upsert_platform_metadata(con: sqlite3.Connection, key: str, value: str, timestamp: str) -> None:
+    con.execute(
+        """
+        INSERT INTO platform_metadata (key,value,updated_at) VALUES (?,?,?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+        """,
+        [key, value, timestamp],
+    )
+
+
+def _ensure_platform_metadata(con: sqlite3.Connection) -> None:
+    timestamp = now()
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS platform_metadata (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    con.execute(
+        "INSERT OR IGNORE INTO platform_metadata (key,value,updated_at) VALUES (?,?,?)",
+        ["initialized_at", timestamp, timestamp],
+    )
+    con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    _upsert_platform_metadata(con, "schema_version", str(SCHEMA_VERSION), timestamp)
+    _upsert_platform_metadata(con, "app_version", settings.app_version, timestamp)
+    _upsert_platform_metadata(con, "last_migrated_at", timestamp, timestamp)
+
+
+def _ensure_platform_operation_runs(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS platform_operation_runs (
+          id TEXT PRIMARY KEY,
+          operation TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          finished_at TEXT,
+          duration_ms INTEGER,
+          detail_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_platform_operation_runs_started ON platform_operation_runs(started_at)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_platform_operation_runs_operation_started ON platform_operation_runs(operation, started_at)")
+
+
+def get_platform_metadata() -> dict[str, dict[str, str]]:
+    with connect_readonly(DB_PATH) as con:
+        rows = con.execute("SELECT key,value,updated_at FROM platform_metadata ORDER BY key").fetchall()
+        return {row["key"]: {"value": row["value"], "updated_at": row["updated_at"]} for row in rows}
+
+
 def migrate_platform_schema() -> None:
     """Small additive migrations for users who run a newer package over an older demo DB."""
     with connect(DB_PATH) as con:
@@ -149,6 +293,333 @@ def migrate_platform_schema() -> None:
                 for col, ddl in cols.items():
                     if col not in current:
                         con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rate_limit_events (
+              id TEXT PRIMARY KEY,
+              bucket_key TEXT NOT NULL,
+              created_at_epoch REAL NOT NULL,
+              created_at TEXT NOT NULL
+            )
+            """
+        )
+        con.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_bucket ON rate_limit_events(bucket_key, created_at_epoch)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_rate_limit_events_created ON rate_limit_events(created_at_epoch)")
+        _ensure_platform_operation_runs(con)
+        if "traces" in existing:
+            con.execute("CREATE INDEX IF NOT EXISTS idx_traces_created ON traces(created_at)")
+        if "chart_specs" in existing:
+            con.execute("CREATE INDEX IF NOT EXISTS idx_chart_specs_trace ON chart_specs(trace_id)")
+        if "tool_calls" in existing:
+            con.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_trace ON tool_calls(trace_id)")
+        _ensure_platform_metadata(con)
+
+
+def _operation_detail_json(detail: dict[str, Any] | None) -> str:
+    return json.dumps(detail or {}, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def start_sqlite_operation_run(operation: str, detail: dict[str, Any] | None = None) -> str:
+    run_id = new_id("sqliteop")
+    started_at = now()
+    with connect(DB_PATH) as con:
+        _ensure_platform_operation_runs(con)
+        con.execute(
+            """
+            INSERT INTO platform_operation_runs (id,operation,status,started_at,detail_json)
+            VALUES (?,?,?,?,?)
+            """,
+            [run_id, operation, "running", started_at, _operation_detail_json(detail)],
+        )
+    return run_id
+
+
+def finish_sqlite_operation_run(run_id: str, status: str, detail: dict[str, Any] | None = None) -> None:
+    finished_at = now()
+    with connect(DB_PATH) as con:
+        _ensure_platform_operation_runs(con)
+        row = con.execute("SELECT started_at FROM platform_operation_runs WHERE id=?", [run_id]).fetchone()
+        duration_ms = None
+        if row:
+            try:
+                started_at = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00"))
+                finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+                duration_ms = int((finished - started_at).total_seconds() * 1000)
+            except Exception:
+                duration_ms = None
+        con.execute(
+            """
+            UPDATE platform_operation_runs
+            SET status=?, finished_at=?, duration_ms=?, detail_json=?
+            WHERE id=?
+            """,
+            [status, finished_at, duration_ms, _operation_detail_json(detail), run_id],
+        )
+
+
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def get_sqlite_backup_freshness(max_age_hours: int | None = None) -> dict[str, Any]:
+    max_age = settings.sqlite_backup_max_age_hours if max_age_hours is None else max_age_hours
+    max_age = max(0, int(max_age))
+    with connect_readonly(DB_PATH) as con:
+        row = con.execute(
+            """
+            SELECT id,operation,status,started_at,finished_at,duration_ms,detail_json
+            FROM platform_operation_runs
+            WHERE operation='sqlite_backup' AND status='ok'
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    enabled = max_age > 0
+    if not row:
+        return {
+            "enabled": enabled,
+            "ok": not enabled,
+            "status": "missing" if enabled else "disabled",
+            "max_age_hours": max_age,
+            "age_hours": None,
+            "last_successful_operation": None,
+        }
+    item = dict(row)
+    try:
+        detail = json.loads(item.pop("detail_json") or "{}")
+    except Exception:
+        detail = {}
+    item["detail"] = detail if isinstance(detail, dict) else {}
+    timestamp = _parse_timestamp(item.get("finished_at") or item.get("started_at"))
+    age_hours = None
+    if timestamp is not None:
+        age_hours = round((datetime.now(timezone.utc) - timestamp).total_seconds() / 3600, 3)
+    stale = enabled and (timestamp is None or age_hours is None or age_hours > max_age)
+    return {
+        "enabled": enabled,
+        "ok": not stale,
+        "status": "disabled" if not enabled else ("stale" if stale else "fresh"),
+        "max_age_hours": max_age,
+        "age_hours": age_hours,
+        "last_successful_operation": item,
+    }
+
+
+def _nearest_existing_path(path: Path) -> Path:
+    current = path
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
+def get_sqlite_storage_status(min_free_mb: int | None = None, path: Path | str | None = None) -> dict[str, Any]:
+    min_free = settings.sqlite_min_free_mb if min_free_mb is None else min_free_mb
+    min_free = max(0, int(min_free))
+    target = Path(path) if path is not None else settings.data_dir
+    enabled = min_free > 0
+    try:
+        checked_path = _nearest_existing_path(target)
+        usage = shutil.disk_usage(checked_path)
+        total_mb = round(usage.total / 1024 / 1024, 2)
+        used_mb = round(usage.used / 1024 / 1024, 2)
+        free_mb = round(usage.free / 1024 / 1024, 2)
+        free_percent = round((usage.free / usage.total) * 100, 2) if usage.total else None
+        ok = not enabled or free_mb >= min_free
+        return {
+            "enabled": enabled,
+            "ok": ok,
+            "status": "disabled" if not enabled else ("ok" if ok else "low_free_space"),
+            "path": str(target),
+            "checked_path": str(checked_path),
+            "exists": target.exists(),
+            "min_free_mb": min_free,
+            "total_mb": total_mb,
+            "used_mb": used_mb,
+            "free_mb": free_mb,
+            "free_percent": free_percent,
+        }
+    except Exception as exc:
+        return {
+            "enabled": enabled,
+            "ok": not enabled,
+            "status": "disabled" if not enabled else "error",
+            "path": str(target),
+            "min_free_mb": min_free,
+            "error": str(exc),
+        }
+
+
+def _quoted_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _issue_payload(count: int, samples: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {"ok": count == 0, "count": count, "samples": samples or []}
+
+
+def _count_query(con: sqlite3.Connection, sql: str, params: Iterable[Any] = ()) -> int:
+    row = con.execute(sql, tuple(params)).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def _sample_query(con: sqlite3.Connection, sql: str, params: Iterable[Any] = ()) -> list[dict[str, Any]]:
+    return dict_rows(con.execute(sql, tuple(params)))
+
+
+def get_sqlite_reference_status(sample_limit: int = 10) -> dict[str, Any]:
+    """Check application-level references that SQLite FKs do not currently enforce."""
+    sample_limit = max(1, int(sample_limit))
+    checks: dict[str, dict[str, Any]] = {}
+    with connect_readonly(DB_PATH) as con:
+        reference_specs = [
+            (
+                "datasets_missing_source",
+                "SELECT COUNT(*) AS c FROM datasets d LEFT JOIN data_sources s ON s.id=d.source_id WHERE s.id IS NULL",
+                "SELECT d.id,d.name,d.source_id FROM datasets d LEFT JOIN data_sources s ON s.id=d.source_id WHERE s.id IS NULL ORDER BY d.id LIMIT ?",
+            ),
+            (
+                "dataset_fields_missing_dataset",
+                "SELECT COUNT(*) AS c FROM dataset_fields f LEFT JOIN datasets d ON d.id=f.dataset_id WHERE d.id IS NULL",
+                "SELECT f.id,f.dataset_id,f.field_name FROM dataset_fields f LEFT JOIN datasets d ON d.id=f.dataset_id WHERE d.id IS NULL ORDER BY f.id LIMIT ?",
+            ),
+            (
+                "metrics_missing_dataset",
+                "SELECT COUNT(*) AS c FROM metrics m LEFT JOIN datasets d ON d.id=m.dataset_id WHERE d.id IS NULL",
+                "SELECT m.id,m.dataset_id,m.code FROM metrics m LEFT JOIN datasets d ON d.id=m.dataset_id WHERE d.id IS NULL ORDER BY m.id LIMIT ?",
+            ),
+            (
+                "dataset_permissions_missing_dataset",
+                "SELECT COUNT(*) AS c FROM dataset_permissions p LEFT JOIN datasets d ON d.id=p.dataset_id WHERE d.id IS NULL",
+                "SELECT p.id,p.dataset_id,p.subject_type,p.subject_id FROM dataset_permissions p LEFT JOIN datasets d ON d.id=p.dataset_id WHERE d.id IS NULL ORDER BY p.id LIMIT ?",
+            ),
+            (
+                "data_quality_rules_missing_dataset",
+                "SELECT COUNT(*) AS c FROM data_quality_rules r LEFT JOIN datasets d ON d.id=r.dataset_id WHERE d.id IS NULL",
+                "SELECT r.id,r.dataset_id,r.name FROM data_quality_rules r LEFT JOIN datasets d ON d.id=r.dataset_id WHERE d.id IS NULL ORDER BY r.id LIMIT ?",
+            ),
+            (
+                "data_quality_results_missing_rule",
+                "SELECT COUNT(*) AS c FROM data_quality_results r LEFT JOIN data_quality_rules q ON q.id=r.rule_id WHERE q.id IS NULL",
+                "SELECT r.id,r.rule_id,r.dataset_id FROM data_quality_results r LEFT JOIN data_quality_rules q ON q.id=r.rule_id WHERE q.id IS NULL ORDER BY r.id LIMIT ?",
+            ),
+            (
+                "panel_widgets_missing_panel",
+                "SELECT COUNT(*) AS c FROM panel_widgets w LEFT JOIN dashboard_panels p ON p.id=w.panel_id WHERE p.id IS NULL",
+                "SELECT w.id,w.panel_id,w.title FROM panel_widgets w LEFT JOIN dashboard_panels p ON p.id=w.panel_id WHERE p.id IS NULL ORDER BY w.id LIMIT ?",
+            ),
+            (
+                "panel_widgets_missing_dataset",
+                "SELECT COUNT(*) AS c FROM panel_widgets w LEFT JOIN datasets d ON d.id=w.dataset_id WHERE w.dataset_id IS NOT NULL AND d.id IS NULL",
+                "SELECT w.id,w.panel_id,w.dataset_id,w.title FROM panel_widgets w LEFT JOIN datasets d ON d.id=w.dataset_id WHERE w.dataset_id IS NOT NULL AND d.id IS NULL ORDER BY w.id LIMIT ?",
+            ),
+            (
+                "codex_artifacts_missing_task",
+                "SELECT COUNT(*) AS c FROM codex_artifacts a LEFT JOIN codex_tasks t ON t.id=a.task_id WHERE t.id IS NULL",
+                "SELECT a.id,a.task_id,a.artifact_type FROM codex_artifacts a LEFT JOIN codex_tasks t ON t.id=a.task_id WHERE t.id IS NULL ORDER BY a.id LIMIT ?",
+            ),
+            (
+                "codex_events_missing_task",
+                "SELECT COUNT(*) AS c FROM codex_runtime_events e LEFT JOIN codex_tasks t ON t.id=e.task_id WHERE t.id IS NULL",
+                "SELECT e.id,e.task_id,e.event_type FROM codex_runtime_events e LEFT JOIN codex_tasks t ON t.id=e.task_id WHERE t.id IS NULL ORDER BY e.id LIMIT ?",
+            ),
+        ]
+        for name, count_sql, sample_sql in reference_specs:
+            checks[name] = _issue_payload(_count_query(con, count_sql), _sample_query(con, sample_sql, [sample_limit]))
+        sqlite_datasets = [
+            dict(row)
+            for row in con.execute(
+                """
+                SELECT id,name,physical_table
+                FROM datasets
+                WHERE source_id='ds_business_sqlite' AND status='active'
+                ORDER BY id
+                """
+            ).fetchall()
+        ]
+        dataset_fields: dict[str, set[str]] = {}
+        for row in con.execute("SELECT dataset_id,field_name FROM dataset_fields ORDER BY dataset_id,field_name").fetchall():
+            dataset_fields.setdefault(row["dataset_id"], set()).add(row["field_name"])
+    business_tables: dict[str, set[str]] = {}
+    business_error = ""
+    try:
+        with connect_readonly(BUSINESS_DB_PATH) as con:
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+                table = row["name"]
+                business_tables[table] = {col["name"] for col in con.execute(f"PRAGMA table_info({_quoted_identifier(table)})").fetchall()}
+    except Exception as exc:
+        business_error = str(exc)
+
+    missing_table_samples: list[dict[str, Any]] = []
+    missing_field_samples: list[dict[str, Any]] = []
+    missing_field_count = 0
+    for dataset in sqlite_datasets:
+        table = dataset["physical_table"]
+        if table not in business_tables:
+            if len(missing_table_samples) < sample_limit:
+                missing_table_samples.append(dataset)
+            continue
+        missing_fields = sorted(dataset_fields.get(dataset["id"], set()) - business_tables[table])
+        if missing_fields:
+            missing_field_count += 1
+            if len(missing_field_samples) < sample_limit:
+                missing_field_samples.append({**dataset, "missing_fields": missing_fields[:20]})
+    checks["active_sqlite_datasets_missing_table"] = _issue_payload(
+        sum(1 for dataset in sqlite_datasets if dataset["physical_table"] not in business_tables),
+        missing_table_samples,
+    )
+    checks["active_sqlite_dataset_fields_missing_column"] = _issue_payload(missing_field_count, missing_field_samples)
+    if business_error:
+        checks["business_db_reference_open"] = {"ok": False, "count": 1, "samples": [{"error": business_error}]}
+
+    issue_count = sum(int(item.get("count") or 0) for item in checks.values())
+    return {
+        "ok": issue_count == 0,
+        "status": "ok" if issue_count == 0 else "issues",
+        "issue_count": issue_count,
+        "checked_active_sqlite_dataset_count": len(sqlite_datasets),
+        "checks": checks,
+    }
+
+
+def get_sqlite_lock_status() -> dict[str, Any]:
+    lock_path = sqlite_init_lock_path()
+    holder: dict[str, Any] = {}
+    locked: bool | None = None
+    try:
+        if lock_path.exists():
+            holder = json.loads(lock_path.read_text(encoding="utf-8").strip() or "{}")
+            if not isinstance(holder, dict):
+                holder = {}
+    except Exception:
+        holder = {}
+    if fcntl is not None and lock_path.exists():
+        try:
+            with lock_path.open("a+", encoding="utf-8") as lock_file:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = False
+                except BlockingIOError:
+                    locked = True
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            locked = None
+    return {
+        "init_lock": {
+            "path": str(lock_path),
+            "exists": lock_path.exists(),
+            "locked": locked,
+            "holder": holder,
+        }
+    }
 
 
 def init_platform_db(reset: bool = False) -> None:
@@ -378,6 +849,82 @@ def _demo_seed_enabled() -> bool:
     return settings.demo_mode and settings.allow_demo_seed
 
 
+def _admin_user_exists() -> bool:
+    row = one(
+        """
+        SELECT u.id
+        FROM users u
+        JOIN user_roles ur ON ur.user_id=u.id
+        JOIN roles r ON r.id=ur.role_id
+        WHERE r.name='admin' AND u.status='active'
+        LIMIT 1
+        """
+    )
+    return row is not None
+
+
+def _seed_bootstrap_admin() -> None:
+    password = settings.bootstrap_admin_password
+    if not password or _admin_user_exists():
+        return
+    username = settings.bootstrap_admin_username or "admin"
+    t = now()
+    user = one("SELECT * FROM users WHERE username=?", [username])
+    if user:
+        user_id = user["id"]
+        update(
+            "users",
+            "id",
+            user_id,
+            {
+                "password": "",
+                "password_hash": hash_secret(password),
+                "name": user.get("name") or settings.bootstrap_admin_name,
+                "email": user.get("email") or settings.bootstrap_admin_email,
+                "department": user.get("department") or settings.bootstrap_admin_department,
+                "status": "active",
+                "failed_login_count": 0,
+                "locked_until": None,
+            },
+        )
+        action = "bootstrap_admin_elevated"
+    else:
+        user_id = new_id("u_bootstrap")
+        insert(
+            "users",
+            {
+                "id": user_id,
+                "username": username,
+                "password": "",
+                "password_hash": hash_secret(password),
+                "name": settings.bootstrap_admin_name,
+                "email": settings.bootstrap_admin_email,
+                "department": settings.bootstrap_admin_department,
+                "status": "active",
+                "failed_login_count": 0,
+                "locked_until": None,
+                "last_login_at": None,
+                "created_at": t,
+            },
+        )
+        action = "bootstrap_admin_created"
+    insert_ignore("user_roles", {"user_id": user_id, "role_id": "r_admin"})
+    insert(
+        "audit_logs",
+        {
+            "id": new_id("audit"),
+            "user_id": user_id,
+            "action": action,
+            "object_type": "user",
+            "object_id": user_id,
+            "detail_json": {"username": username, "source": "env_bootstrap"},
+            "ip": "",
+            "request_id": "",
+            "created_at": t,
+        },
+    )
+
+
 def seed_platform() -> None:
     t = now()
     _seed_demo_user("u_admin", {"id": "u_admin", "username": "admin", "password": "", "password_hash": hash_secret("admin123"), "name": "平台管理员", "email": "admin@example.com", "department": "Data Agent", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
@@ -406,6 +953,8 @@ def seed_platform() -> None:
         insert_ignore("role_permissions", {"role_id": "r_admin", "permission_id": pid})
     for pid in ["perm_agent_use", "perm_data_read"]:
         insert_ignore("role_permissions", {"role_id": "r_business", "permission_id": pid})
+
+    _seed_bootstrap_admin()
 
     if not _demo_seed_enabled():
         return
@@ -605,5 +1154,6 @@ def seed_platform() -> None:
 
 
 def init_all(reset: bool = False) -> None:
-    init_business_db(reset=reset)
-    init_platform_db(reset=reset)
+    with sqlite_init_lock():
+        init_business_db(reset=reset)
+        init_platform_db(reset=reset)

@@ -1,5 +1,6 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import json
 import os
 import sqlite3
 import sys
@@ -18,7 +19,12 @@ from fastapi.testclient import TestClient
 from apps.api import db
 from apps.api.auth_utils import hash_secret, verify_secret
 from apps.api.main import app
+from apps.api.rate_limiter import check_rate_limit
+from apps.api.routers import data as data_router
 from apps.api.services.adapters import call_generic_http
+from scripts.sqlite_maintenance import copy_sqlite_snapshot, maintain_databases
+from scripts.sqlite_backup import backup_databases, rehearse_restore, verify_backup_dir
+from scripts.sqlite_ops_lock import SQLiteOpsLockTimeout, sqlite_ops_lock
 
 
 def login(client, username, password):
@@ -32,6 +38,11 @@ def assert_demo_seed_can_be_disabled():
     original_business_db_path = db.BUSINESS_DB_PATH
     original_demo_mode = db.settings.demo_mode
     original_allow_demo_seed = db.settings.allow_demo_seed
+    original_bootstrap_username = db.settings.bootstrap_admin_username
+    original_bootstrap_password = db.settings.bootstrap_admin_password
+    original_bootstrap_name = db.settings.bootstrap_admin_name
+    original_bootstrap_email = db.settings.bootstrap_admin_email
+    original_bootstrap_department = db.settings.bootstrap_admin_department
     try:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -39,6 +50,8 @@ def assert_demo_seed_can_be_disabled():
             db.BUSINESS_DB_PATH = tmp_path / 'business.db'
             db.settings.demo_mode = False
             db.settings.allow_demo_seed = False
+            db.settings.bootstrap_admin_username = ''
+            db.settings.bootstrap_admin_password = ''
             db.init_all(reset=True)
             assert db.one('SELECT id FROM users WHERE username=?', ['admin']) is None
             assert db.one('SELECT id FROM users WHERE username=?', ['user']) is None
@@ -63,6 +76,61 @@ def assert_demo_seed_can_be_disabled():
         db.BUSINESS_DB_PATH = original_business_db_path
         db.settings.demo_mode = original_demo_mode
         db.settings.allow_demo_seed = original_allow_demo_seed
+        db.settings.bootstrap_admin_username = original_bootstrap_username
+        db.settings.bootstrap_admin_password = original_bootstrap_password
+        db.settings.bootstrap_admin_name = original_bootstrap_name
+        db.settings.bootstrap_admin_email = original_bootstrap_email
+        db.settings.bootstrap_admin_department = original_bootstrap_department
+
+
+def assert_bootstrap_admin_can_seed_empty_sqlite():
+    original_db_path = db.DB_PATH
+    original_business_db_path = db.BUSINESS_DB_PATH
+    original_demo_mode = db.settings.demo_mode
+    original_allow_demo_seed = db.settings.allow_demo_seed
+    original_bootstrap_username = db.settings.bootstrap_admin_username
+    original_bootstrap_password = db.settings.bootstrap_admin_password
+    original_bootstrap_name = db.settings.bootstrap_admin_name
+    original_bootstrap_email = db.settings.bootstrap_admin_email
+    original_bootstrap_department = db.settings.bootstrap_admin_department
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db.DB_PATH = tmp_path / 'platform.db'
+            db.BUSINESS_DB_PATH = tmp_path / 'business.db'
+            db.settings.demo_mode = False
+            db.settings.allow_demo_seed = False
+            db.settings.bootstrap_admin_username = 'first-admin'
+            db.settings.bootstrap_admin_password = 'initial-admin-pass'
+            db.settings.bootstrap_admin_name = 'First Admin'
+            db.settings.bootstrap_admin_email = 'first-admin@example.invalid'
+            db.settings.bootstrap_admin_department = 'Platform'
+            db.init_all(reset=True)
+            user = db.one('SELECT * FROM users WHERE username=?', ['first-admin'])
+            assert user is not None
+            assert verify_secret('initial-admin-pass', user['password_hash'])
+            roles = db.many(
+                'SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id=r.id WHERE ur.user_id=?',
+                [user['id']],
+            )
+            assert [r['name'] for r in roles] == ['admin'], roles
+            audit = db.one("SELECT * FROM audit_logs WHERE action='bootstrap_admin_created' AND object_id=?", [user['id']])
+            assert audit is not None
+            db.settings.bootstrap_admin_password = 'rotated-env-value-should-not-reset-existing-admin'
+            db.init_all(reset=False)
+            unchanged = db.one('SELECT password_hash FROM users WHERE id=?', [user['id']])
+            assert verify_secret('initial-admin-pass', unchanged['password_hash'])
+            assert not verify_secret('rotated-env-value-should-not-reset-existing-admin', unchanged['password_hash'])
+    finally:
+        db.DB_PATH = original_db_path
+        db.BUSINESS_DB_PATH = original_business_db_path
+        db.settings.demo_mode = original_demo_mode
+        db.settings.allow_demo_seed = original_allow_demo_seed
+        db.settings.bootstrap_admin_username = original_bootstrap_username
+        db.settings.bootstrap_admin_password = original_bootstrap_password
+        db.settings.bootstrap_admin_name = original_bootstrap_name
+        db.settings.bootstrap_admin_email = original_bootstrap_email
+        db.settings.bootstrap_admin_department = original_bootstrap_department
 
 
 class RedirectHandler(BaseHTTPRequestHandler):
@@ -103,6 +171,507 @@ def assert_readonly_business_connection_rejects_writes():
             raise AssertionError('readonly business connection accepted a write')
 
 
+def assert_sqlite_rate_limiter_persists_events():
+    key = f"regression:{db.new_id('rate')}"
+    check_rate_limit(key, 2, window_seconds=60)
+    check_rate_limit(key, 2, window_seconds=60)
+    stored = db.one('SELECT COUNT(*) c FROM rate_limit_events WHERE bucket_key=?', [key])
+    assert stored['c'] == 2, stored
+    try:
+        check_rate_limit(key, 2, window_seconds=60)
+    except HTTPException as exc:
+        assert exc.status_code == 429
+    else:
+        raise AssertionError('SQLite-backed rate limiter accepted a request over the limit')
+
+
+def assert_platform_metadata_tracks_sqlite_schema(client):
+    metadata = db.get_platform_metadata()
+    assert metadata['schema_version']['value'] == str(db.SCHEMA_VERSION), metadata
+    assert metadata['app_version']['value'] == db.settings.app_version, metadata
+    assert metadata['initialized_at']['value'], metadata
+    assert metadata['last_migrated_at']['value'], metadata
+    with db.connect_readonly() as con:
+        assert con.execute('PRAGMA user_version').fetchone()[0] == db.SCHEMA_VERSION
+    r = client.get('/_ops/persistence')
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload['schema']['expected_platform_schema_version'] == db.SCHEMA_VERSION, payload
+    assert payload['schema']['platform_user_version'] == db.SCHEMA_VERSION, payload
+    assert payload['schema']['platform_metadata']['schema_version']['value'] == str(db.SCHEMA_VERSION), payload
+    assert payload['platform_db']['estimated_size_bytes'] > 0, payload
+
+
+def assert_readiness_checks_sqlite_runtime(client):
+    r = client.get('/api/health/ready')
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload['status'] == 'ok', payload
+    assert payload['checks']['platform_db']['user_version'] == db.SCHEMA_VERSION, payload
+    assert payload['checks']['platform_db']['active_admin_count'] > 0, payload
+    assert payload['checks']['business_db']['sales_order_count'] > 0, payload
+    assert payload['checks']['sqlite_backup']['status'] == 'missing', payload
+    assert payload['checks']['sqlite_storage']['status'] in {'ok', 'disabled'}, payload
+    assert payload['checks']['sqlite_storage']['free_mb'] >= 0, payload
+    original_db_path = db.DB_PATH
+    original_settings_db_path = db.settings.db_path
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_path = Path(tmp) / 'missing-platform.db'
+            db.DB_PATH = missing_path
+            db.settings.db_path = missing_path
+            failed = client.get('/api/health/ready')
+            assert failed.status_code == 503, failed.text
+            failed_payload = failed.json()
+            assert failed_payload['status'] == 'not_ready', failed_payload
+            assert failed_payload['checks']['platform_db']['ok'] is False, failed_payload
+            assert 'error' in failed_payload['checks']['platform_db'], failed_payload
+    finally:
+        db.DB_PATH = original_db_path
+        db.settings.db_path = original_settings_db_path
+
+
+def assert_sqlite_storage_status_is_exposed(client):
+    storage = db.get_sqlite_storage_status(min_free_mb=0)
+    assert storage['enabled'] is False, storage
+    assert storage['ok'] is True, storage
+    assert storage['status'] == 'disabled', storage
+    assert storage['free_mb'] >= 0, storage
+    forced_threshold = int(storage['free_mb']) + 1
+    low = db.get_sqlite_storage_status(min_free_mb=forced_threshold)
+    assert low['enabled'] is True, low
+    assert low['ok'] is False, low
+    assert low['status'] == 'low_free_space', low
+
+    original_min_free_mb = db.settings.sqlite_min_free_mb
+    try:
+        db.settings.sqlite_min_free_mb = forced_threshold
+        r = client.get('/_ops/persistence')
+        assert r.status_code == 200, r.text
+        persistence = r.json()
+        assert persistence['sqlite_storage']['status'] == 'low_free_space', persistence
+        r = client.get('/_ops/metrics')
+        assert r.status_code == 200, r.text
+        assert 'dap_sqlite_storage_ok 0' in r.text, r.text
+        assert 'dap_sqlite_storage_free_mb' in r.text, r.text
+        assert 'dap_sqlite_storage_min_free_mb' in r.text, r.text
+    finally:
+        db.settings.sqlite_min_free_mb = original_min_free_mb
+
+
+def assert_sqlite_runtime_path_warnings_are_specific():
+    original_app_env = db.settings.app_env
+    original_hf_space = db.settings.hf_space
+    original_data_dir = db.settings.data_dir
+    original_db_path = db.settings.db_path
+    original_business_db_path = db.settings.business_db_path
+    try:
+        db.settings.app_env = 'production'
+        db.settings.hf_space = True
+        db.settings.data_dir = Path('/persist/data-agent-platform')
+        db.settings.db_path = Path('/tmp/dap-platform.db')
+        db.settings.business_db_path = ROOT / 'data' / 'business_sample.db'
+        warnings = db.settings.validate_for_runtime()
+        assert any('DAP_DB_PATH is outside DAP_DATA_DIR' in item for item in warnings), warnings
+        assert any('DAP_DB_PATH points under /tmp' in item for item in warnings), warnings
+        assert any('DAP_BUSINESS_DB_PATH is outside DAP_DATA_DIR' in item for item in warnings), warnings
+        assert any('DAP_BUSINESS_DB_PATH points inside the repository' in item for item in warnings), warnings
+    finally:
+        db.settings.app_env = original_app_env
+        db.settings.hf_space = original_hf_space
+        db.settings.data_dir = original_data_dir
+        db.settings.db_path = original_db_path
+        db.settings.business_db_path = original_business_db_path
+
+
+def assert_sqlite_reference_status_detects_orphans(client):
+    baseline = db.get_sqlite_reference_status()
+    assert baseline['ok'], baseline
+    bad_dataset_id = 'dataset_missing_table_regression'
+    db.insert(
+        'datasets',
+        {
+            'id': bad_dataset_id,
+            'name': 'Missing table regression',
+            'business_domain': 'Regression',
+            'source_id': 'ds_business_sqlite',
+            'physical_table': 'missing_table_regression',
+            'description': 'regression only',
+            'refresh_mode': 'manual',
+            'data_classification': 'internal',
+            'status': 'active',
+        },
+    )
+    try:
+        status = db.get_sqlite_reference_status()
+        assert not status['ok'], status
+        missing = status['checks']['active_sqlite_datasets_missing_table']
+        assert missing['count'] >= 1, status
+        assert any(item['id'] == bad_dataset_id for item in missing['samples']), status
+        r = client.get('/api/health/ready')
+        assert r.status_code == 503, r.text
+        assert r.json()['checks']['sqlite_references']['ok'] is False, r.text
+        r = client.get('/_ops/persistence')
+        assert r.status_code == 200, r.text
+        assert r.json()['sqlite_references']['checks']['active_sqlite_datasets_missing_table']['count'] >= 1, r.text
+        r = client.get('/_ops/metrics')
+        assert r.status_code == 200, r.text
+        assert 'dap_sqlite_reference_ok 0' in r.text, r.text
+        assert 'dap_sqlite_reference_issues' in r.text, r.text
+    finally:
+        db.execute('DELETE FROM datasets WHERE id=?', [bad_dataset_id])
+    assert db.get_sqlite_reference_status()['ok']
+
+
+def assert_sqlite_init_lock_prevents_concurrent_startup(client):
+    original_timeout = db.settings.sqlite_init_lock_timeout_seconds
+    try:
+        db.settings.sqlite_init_lock_timeout_seconds = 0
+        with db.sqlite_init_lock(timeout_seconds=0) as holder:
+            assert holder['enabled'] is True, holder
+            assert Path(holder['path']).exists(), holder
+            active_lock = db.get_sqlite_lock_status()['init_lock']
+            assert active_lock['locked'] is True, active_lock
+            try:
+                db.init_all(reset=False)
+            except db.SQLiteInitLockTimeout as exc:
+                assert exc.lock_path == db.sqlite_init_lock_path().resolve(), exc.lock_path
+                assert exc.holder.get('operation') == 'init_all', exc.holder
+            else:
+                raise AssertionError('concurrent SQLite startup init unexpectedly acquired the lock')
+        db.init_all(reset=False)
+        locks = db.get_sqlite_lock_status()
+        assert locks['init_lock']['exists'], locks
+        assert locks['init_lock']['locked'] is False, locks
+        assert locks['init_lock']['holder'].get('operation') == 'init_all', locks
+        r = client.get('/_ops/persistence')
+        assert r.status_code == 200, r.text
+        assert r.json()['sqlite_locks']['init_lock']['exists'], r.text
+    finally:
+        db.settings.sqlite_init_lock_timeout_seconds = original_timeout
+
+
+def assert_sqlite_backup_creates_verified_snapshot():
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp) / 'backups'
+        manifest = backup_databases(db.DB_PATH, db.BUSINESS_DB_PATH, output_dir, name='regression-backup')
+        platform = manifest['databases']['platform']
+        business = manifest['databases']['business']
+        assert platform['status'] == 'ok', manifest
+        assert business['status'] == 'ok', manifest
+        assert platform['integrity_check'] == 'ok', manifest
+        assert business['integrity_check'] == 'ok', manifest
+        assert platform['user_version'] == db.SCHEMA_VERSION, manifest
+        assert len(platform['sha256']) == 64, manifest
+        assert len(business['sha256']) == 64, manifest
+        platform_backup = Path(platform['backup_path'])
+        business_backup = Path(business['backup_path'])
+        assert platform_backup.exists() and platform_backup.stat().st_size > 0
+        assert business_backup.exists() and business_backup.stat().st_size > 0
+        manifest_path = Path(manifest['manifest_path'])
+        assert manifest_path.exists()
+        verification = verify_backup_dir(Path(manifest['backup_dir']))
+        assert verification['ok'], verification
+        assert verification['checks']['platform']['user_version'] == db.SCHEMA_VERSION, verification
+        assert verification['checks']['platform']['sha256_matches_manifest'], verification
+        assert verification['checks']['business']['sha256_matches_manifest'], verification
+        rehearsal = rehearse_restore(Path(manifest['backup_dir']), Path(tmp) / 'restore-rehearsal')
+        assert rehearsal['ok'], rehearsal
+        assert rehearsal['checks']['platform']['schema_version_matches'], rehearsal
+        assert rehearsal['checks']['platform']['active_admin_count'] > 0, rehearsal
+        assert rehearsal['checks']['business']['status'] == 'ok', rehearsal
+        with sqlite3.connect(platform_backup) as con:
+            assert con.execute('SELECT COUNT(*) FROM users').fetchone()[0] > 0
+            assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+        with sqlite3.connect(business_backup) as con:
+            assert con.execute('SELECT COUNT(*) FROM sales_orders').fetchone()[0] > 0
+            assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+
+
+def assert_sqlite_maintenance_runs_on_copies():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        platform_copy = tmp_path / 'platform.db'
+        business_copy = tmp_path / 'business.db'
+        assert copy_sqlite_snapshot(db.DB_PATH, platform_copy)
+        assert copy_sqlite_snapshot(db.BUSINESS_DB_PATH, business_copy)
+        report = maintain_databases(platform_copy, business_copy, checkpoint_mode='passive', optimize=True)
+        assert report['ok'], report
+        assert report['databases']['platform']['status'] == 'ok', report
+        assert report['databases']['business']['status'] == 'ok', report
+        assert report['databases']['platform']['after']['integrity_check'] == 'ok', report
+        assert report['databases']['business']['after']['integrity_check'] == 'ok', report
+        dry_run = maintain_databases(platform_copy, business_copy, checkpoint_mode='none', optimize=False, dry_run=True)
+        assert dry_run['ok'], dry_run
+        assert dry_run['databases']['platform']['actions'][0]['name'] == 'dry_run', dry_run
+
+
+def assert_sqlite_maintenance_prunes_runtime_tables():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        platform_copy = tmp_path / 'platform.db'
+        business_copy = tmp_path / 'business.db'
+        assert copy_sqlite_snapshot(db.DB_PATH, platform_copy)
+        assert copy_sqlite_snapshot(db.BUSINESS_DB_PATH, business_copy)
+        old_iso = '2000-01-01T00:00:00Z'
+        trace_id = 'trace_retention_regression'
+        with sqlite3.connect(platform_copy) as con:
+            con.execute(
+                "INSERT INTO traces (id,user_id,input,status,cost_json,created_at) VALUES (?,?,?,?,?,?)",
+                [trace_id, 'u_admin', 'retention', 'success', '{}', old_iso],
+            )
+            con.execute(
+                "INSERT INTO trace_steps (id,trace_id,step_no,step_type,name,input_json,output_json,status,duration_ms) VALUES (?,?,?,?,?,?,?,?,?)",
+                ['step_retention_regression', trace_id, 1, 'test', 'retention', '{}', '{}', 'success', 0],
+            )
+            con.execute(
+                "INSERT INTO sql_runs (id,trace_id,sql_text,status,row_count,duration_ms,error_message) VALUES (?,?,?,?,?,?,?)",
+                ['sql_retention_regression', trace_id, 'SELECT 1', 'success', 1, 0, ''],
+            )
+            con.execute(
+                "INSERT INTO chart_specs (id,trace_id,chart_type,spec_json,data_ref,created_at) VALUES (?,?,?,?,?,?)",
+                ['chart_retention_regression', trace_id, 'table', '{}', '', old_iso],
+            )
+            con.execute(
+                "INSERT INTO tool_calls (id,trace_id,adapter_id,request_json,response_json,status,duration_ms,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                ['call_retention_regression', trace_id, 'ad_mock_router', '{}', '{}', 'success', 0, old_iso],
+            )
+            con.execute(
+                "INSERT INTO audit_logs (id,user_id,action,object_type,object_id,detail_json,ip,request_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                ['audit_retention_regression', 'u_admin', 'retention_probe', 'test', trace_id, '{}', '', '', old_iso],
+            )
+            con.execute(
+                "INSERT INTO rate_limit_events (id,bucket_key,created_at_epoch,created_at) VALUES (?,?,?,?)",
+                ['rl_retention_regression', 'retention:old', 1.0, old_iso],
+            )
+        dry_run = maintain_databases(
+            platform_copy,
+            business_copy,
+            checkpoint_mode='none',
+            optimize=False,
+            dry_run=True,
+            trace_retention_days=1,
+            audit_retention_days=1,
+            rate_limit_retention_hours=1,
+        )
+        assert dry_run['ok'], dry_run
+        dry_actions = {action['name']: action for action in dry_run['runtime_retention']['actions']}
+        assert dry_actions['prune_traces']['matched_rows'] == 1, dry_run
+        assert dry_actions['prune_traces']['deleted_rows'] == 0, dry_run
+        assert dry_actions['prune_audit_logs']['matched_rows'] >= 1, dry_run
+        assert dry_actions['prune_rate_limit_events']['matched_rows'] >= 1, dry_run
+        with sqlite3.connect(platform_copy) as con:
+            assert con.execute("SELECT COUNT(*) FROM traces WHERE id=?", [trace_id]).fetchone()[0] == 1
+        report = maintain_databases(
+            platform_copy,
+            business_copy,
+            checkpoint_mode='none',
+            optimize=False,
+            trace_retention_days=1,
+            audit_retention_days=1,
+            rate_limit_retention_hours=1,
+        )
+        assert report['ok'], report
+        actions = {action['name']: action for action in report['runtime_retention']['actions']}
+        assert actions['prune_traces']['deleted_rows'] == 1, report
+        assert actions['prune_audit_logs']['deleted_rows'] >= 1, report
+        assert actions['prune_rate_limit_events']['deleted_rows'] >= 1, report
+        with sqlite3.connect(platform_copy) as con:
+            assert con.execute("SELECT COUNT(*) FROM traces WHERE id=?", [trace_id]).fetchone()[0] == 0
+            assert con.execute("SELECT COUNT(*) FROM trace_steps WHERE trace_id=?", [trace_id]).fetchone()[0] == 0
+            assert con.execute("SELECT COUNT(*) FROM sql_runs WHERE trace_id=?", [trace_id]).fetchone()[0] == 0
+            assert con.execute("SELECT COUNT(*) FROM chart_specs WHERE trace_id=?", [trace_id]).fetchone()[0] == 0
+            assert con.execute("SELECT COUNT(*) FROM tool_calls WHERE trace_id=?", [trace_id]).fetchone()[0] == 0
+            assert con.execute("SELECT COUNT(*) FROM audit_logs WHERE id='audit_retention_regression'").fetchone()[0] == 0
+            assert con.execute("SELECT COUNT(*) FROM rate_limit_events WHERE id='rl_retention_regression'").fetchone()[0] == 0
+
+
+def assert_sqlite_ops_lock_prevents_overlap():
+    with tempfile.TemporaryDirectory() as tmp:
+        lock_path = Path(tmp) / '.sqlite-ops.lock'
+        with sqlite_ops_lock(lock_path, operation='outer-regression', timeout_seconds=0) as holder:
+            assert holder['operation'] == 'outer-regression', holder
+            assert lock_path.exists()
+            try:
+                with sqlite_ops_lock(lock_path, operation='inner-regression', timeout_seconds=0):
+                    raise AssertionError('nested SQLite operation lock unexpectedly succeeded')
+            except SQLiteOpsLockTimeout as exc:
+                assert exc.lock_path == lock_path.resolve(), exc.lock_path
+                assert exc.holder.get('operation') == 'outer-regression', exc.holder
+        with sqlite_ops_lock(lock_path, operation='after-release-regression', timeout_seconds=0) as holder:
+            assert holder['operation'] == 'after-release-regression', holder
+
+
+def assert_platform_operation_runs_are_persisted_and_exposed(client):
+    missing_backup = db.get_sqlite_backup_freshness(max_age_hours=1)
+    assert missing_backup['status'] == 'missing', missing_backup
+    run_id = db.start_sqlite_operation_run('regression_sqlite_operation', {'probe': True})
+    db.finish_sqlite_operation_run(run_id, 'ok', {'ok': True, 'rows': 1})
+    row = db.one('SELECT * FROM platform_operation_runs WHERE id=?', [run_id])
+    assert row is not None, run_id
+    assert row['operation'] == 'regression_sqlite_operation', row
+    assert row['status'] == 'ok', row
+    assert row['finished_at'], row
+    assert row['duration_ms'] is not None, row
+    assert json.loads(row['detail_json'])['ok'] is True, row
+    r = client.get('/_ops/persistence')
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload['table_counts']['platform_operation_runs'] >= 1, payload
+    assert payload['sqlite_operation_summary']['status_counts']['ok'] >= 1, payload
+    assert payload['sqlite_operation_summary']['last_successful_operation']['status'] == 'ok', payload
+    recent_ids = [item['id'] for item in payload['recent_sqlite_operations']]
+    assert run_id in recent_ids, payload['recent_sqlite_operations']
+    old_running_id = 'sqliteop_stale_regression'
+    old_finished_id = 'sqliteop_prune_regression'
+    old_iso = '2000-01-01T00:00:00Z'
+    db.insert(
+        'platform_operation_runs',
+        {
+            'id': old_running_id,
+            'operation': 'regression_old_running',
+            'status': 'running',
+            'started_at': old_iso,
+            'finished_at': None,
+            'duration_ms': None,
+            'detail_json': {},
+        },
+    )
+    db.insert(
+        'platform_operation_runs',
+        {
+            'id': old_finished_id,
+            'operation': 'regression_old_finished',
+            'status': 'ok',
+            'started_at': old_iso,
+            'finished_at': old_iso,
+            'duration_ms': 0,
+            'detail_json': {},
+        },
+    )
+    dry_run = maintain_databases(
+        db.DB_PATH,
+        db.BUSINESS_DB_PATH,
+        checkpoint_mode='none',
+        optimize=False,
+        dry_run=True,
+        operation_run_retention_days=1,
+        stale_operation_hours=1,
+    )
+    dry_actions = {action['name']: action for action in dry_run['runtime_retention']['actions']}
+    assert dry_actions['mark_stale_platform_operation_runs']['matched_rows'] >= 1, dry_run
+    assert dry_actions['mark_stale_platform_operation_runs']['updated_rows'] == 0, dry_run
+    assert dry_actions['prune_platform_operation_runs']['matched_rows'] >= 1, dry_run
+    assert dry_actions['prune_platform_operation_runs']['deleted_rows'] == 0, dry_run
+    assert db.one('SELECT status FROM platform_operation_runs WHERE id=?', [old_running_id])['status'] == 'running'
+    report = maintain_databases(
+        db.DB_PATH,
+        db.BUSINESS_DB_PATH,
+        checkpoint_mode='none',
+        optimize=False,
+        operation_run_retention_days=1,
+        stale_operation_hours=1,
+    )
+    actions = {action['name']: action for action in report['runtime_retention']['actions']}
+    assert actions['mark_stale_platform_operation_runs']['updated_rows'] >= 1, report
+    assert actions['prune_platform_operation_runs']['deleted_rows'] >= 1, report
+    assert db.one('SELECT status FROM platform_operation_runs WHERE id=?', [old_running_id])['status'] == 'stale'
+    assert db.one('SELECT id FROM platform_operation_runs WHERE id=?', [old_finished_id]) is None
+    old_backup_id = 'sqliteop_old_backup_regression'
+    db.insert(
+        'platform_operation_runs',
+        {
+            'id': old_backup_id,
+            'operation': 'sqlite_backup',
+            'status': 'ok',
+            'started_at': old_iso,
+            'finished_at': old_iso,
+            'duration_ms': 0,
+            'detail_json': {'mode': 'backup', 'ok': True},
+        },
+    )
+    stale_backup = db.get_sqlite_backup_freshness(max_age_hours=1)
+    assert stale_backup['status'] == 'stale', stale_backup
+    fresh_backup_id = db.start_sqlite_operation_run('sqlite_backup', {'mode': 'backup'})
+    db.finish_sqlite_operation_run(fresh_backup_id, 'ok', {'mode': 'backup', 'ok': True})
+    fresh_backup = db.get_sqlite_backup_freshness(max_age_hours=1)
+    assert fresh_backup['status'] == 'fresh', fresh_backup
+    assert fresh_backup['last_successful_operation']['id'] == fresh_backup_id, fresh_backup
+    r = client.get('/_ops/persistence')
+    assert r.status_code == 200, r.text
+    persistence = r.json()
+    assert persistence['sqlite_backup_freshness']['status'] == 'fresh', persistence
+    r = client.get('/_ops/metrics')
+    assert r.status_code == 200, r.text
+    assert 'dap_sqlite_backup_fresh 1' in r.text, r.text
+    assert 'dap_sqlite_backup_age_hours' in r.text, r.text
+
+
+def _business_import_tables() -> set[str]:
+    with db.connect_readonly(db.BUSINESS_DB_PATH) as con:
+        return {
+            row['name']
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'import_tbl_%'").fetchall()
+        }
+
+
+def assert_csv_import_failure_cleans_business_table(client, headers):
+    before_tables = _business_import_tables()
+    original_persist = data_router._persist_csv_import_metadata
+
+    def fail_metadata(*args, **kwargs):
+        raise RuntimeError('forced metadata failure')
+
+    data_router._persist_csv_import_metadata = fail_metadata
+    try:
+        files = {'file': ('fail.csv', 'alpha,beta\n1,2\n', 'text/csv')}
+        r = client.post('/api/data/import/csv?dataset_name=forced_fail&business_domain=Tmp', headers=headers, files=files)
+    finally:
+        data_router._persist_csv_import_metadata = original_persist
+
+    assert r.status_code == 500, r.text
+    body = r.json()
+    message = body.get('detail') or body.get('error', {}).get('message')
+    assert message == 'CSV import failed', r.text
+    assert _business_import_tables() == before_tables
+    assert db.one("SELECT id FROM datasets WHERE name=?", ['forced_fail']) is None
+    job = db.one("SELECT * FROM data_import_jobs WHERE filename=? ORDER BY created_at DESC LIMIT 1", ['fail.csv'])
+    assert job is not None, 'failed import job was not recorded'
+    assert job['status'] == 'failed', job
+    assert 'forced metadata failure' in (job['error_message'] or ''), job
+    failure_audit = db.one("SELECT * FROM audit_logs WHERE action='import_csv_failed' AND object_id=? ORDER BY created_at DESC LIMIT 1", [job['dataset_id']])
+    assert failure_audit is not None, 'failed import audit was not recorded'
+    assert 'forced metadata failure' in json.loads(failure_audit['detail_json'])['error'], failure_audit
+
+
+def assert_codex_handoff_artifact_is_sqlite_backed(client, headers):
+    prompt = 'Persist this Codex handoff body in SQLite for backup and restore coverage.'
+    r = client.post(
+        '/api/codex/tasks',
+        headers=headers,
+        json={
+            'title': 'SQLite handoff persistence regression',
+            'task_prompt': prompt,
+            'acceptance_criteria': ['handoff content is persisted in SQLite'],
+            'requires_approval': True,
+            'mode': 'mock',
+        },
+    )
+    assert r.status_code == 200, r.text
+    task_id = r.json()['id']
+    artifact = db.one("SELECT * FROM codex_artifacts WHERE task_id=? AND artifact_type='handoff_md'", [task_id])
+    assert artifact is not None, 'handoff artifact was not recorded'
+    assert prompt in artifact['content'], artifact
+
+    db.update('codex_artifacts', 'id', artifact['id'], {'content': ''})
+    r = client.post(f'/api/codex/tasks/{task_id}/approve', headers=headers, json={'comment': 'ok'})
+    assert r.status_code == 200, r.text
+    r = client.post(f'/api/codex/tasks/{task_id}/dispatch', headers=headers, json={'mode': 'mock'})
+    assert r.status_code == 200, r.text
+    refreshed = db.one('SELECT * FROM codex_artifacts WHERE id=?', [artifact['id']])
+    assert prompt in refreshed['content'], refreshed
+
+
 def main():
     db.init_all(reset=True)
     client = TestClient(app)
@@ -129,6 +698,18 @@ def main():
     assert r.status_code == 200, r.text
     assert r.json()['row_count'] <= 7, r.text
     assert_readonly_business_connection_rejects_writes()
+    assert_sqlite_rate_limiter_persists_events()
+    assert_platform_metadata_tracks_sqlite_schema(client)
+    assert_readiness_checks_sqlite_runtime(client)
+    assert_sqlite_storage_status_is_exposed(client)
+    assert_sqlite_runtime_path_warnings_are_specific()
+    assert_sqlite_reference_status_detects_orphans(client)
+    assert_sqlite_init_lock_prevents_concurrent_startup(client)
+    assert_sqlite_backup_creates_verified_snapshot()
+    assert_sqlite_maintenance_runs_on_copies()
+    assert_sqlite_maintenance_prunes_runtime_tables()
+    assert_sqlite_ops_lock_prevents_overlap()
+    assert_platform_operation_runs_are_persisted_and_exposed(client)
 
     # Profile and panel direct API calls should return a usable trace id.
     r = client.get('/api/data/profile/dataset_orders', headers=admin)
@@ -165,6 +746,8 @@ def main():
     r = client.post('/api/data/query', headers=admin, json={'dataset_id': 'dataset_orders', 'sql': 'SELECT COUNT(*) AS c FROM sales_orders'})
     assert r.status_code == 200, r.text
     assert r.json()['rows'][0]['c'] > 0
+    assert_csv_import_failure_cleans_business_table(client, admin)
+    assert_codex_handoff_artifact_is_sqlite_backed(client, admin)
 
     # Startup seeding should be idempotent for agent permissions.
     before = db.one('SELECT COUNT(*) c FROM agent_permissions')['c']
@@ -189,6 +772,7 @@ def main():
     login(client, 'admin', 'changed-admin-password')
 
     assert_demo_seed_can_be_disabled()
+    assert_bootstrap_admin_can_seed_empty_sqlite()
     assert_external_adapter_rejects_redirect()
     db.init_all(reset=True)
 

@@ -2101,6 +2101,15 @@ function contextPackSummaryDetail(){
   if(counts.sessions) parts.push(`${counts.sessions} 会话`);
   return parts.length?parts.join(' · '):'Project-style local context';
 }
+function contextPackAssetTotal(counts=contextPackCounts()){
+  return counts.datasets+counts.knowledge+counts.reports+counts.files+counts.notes;
+}
+function contextPackOpenTasks(pack=normalizeContextPack(contextPack)){
+  return pack.projectTasks.filter(task=>task.status!=='done');
+}
+function contextPackPrimaryTask(pack=normalizeContextPack(contextPack)){
+  return contextPackOpenTasks(pack)[0] || pack.projectTasks[0] || null;
+}
 function contextPackAgentName(){
   return agents.find(a=>a.id===contextPack.agentId)?.name || contextPack.agentId || '';
 }
@@ -2124,6 +2133,42 @@ function contextPackPills(){
     <div><small>${esc(pill.label)}</small><b>${esc(short(pill.value,34))}</b></div>
     <nav aria-label="${esc(pill.label)} 操作"><button type="button" onclick="openContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">打开</button>${pill.kind==='task'?`<button type="button" onclick="toggleContextPackTask('${jsArg(pill.id)}')">${pill.done?'恢复':'完成'}</button>`:''}<button type="button" onclick="removeContextPackItem('${jsArg(pill.kind)}','${jsArg(pill.id)}')">移除</button></nav>
   </article>`).join('')}</div>`:`<p class="context-pack-empty">捕获当前会话、添加资产、加入本地资料、存入关键回答或加入项目待办后，这里会显示 Agent、数据集、知识库、Trace、报告、会话、资料、摘录和待办线索。</p>`;
+}
+function contextPackProjectBriefHtml(){
+  const p=normalizeContextPack(contextPack);
+  const counts=contextPackCounts();
+  const openTasks=contextPackOpenTasks(p);
+  const primaryTask=contextPackPrimaryTask(p);
+  const assetTotal=contextPackAssetTotal(counts);
+  const evidenceTotal=counts.traces+counts.sessions;
+  const briefItems=[
+    ['来源',assetTotal,assetTotal?'数据/知识/报告/资料/摘录':'等待添加'],
+    ['待办',openTasks.length,`${p.projectTasks.length} 总数`],
+    ['证据',evidenceTotal,evidenceTotal?'Trace / 会话':'发送问题后捕获']
+  ];
+  const quickPrompts=[
+    ['复盘项目状态','请基于当前工作包复盘目标、已知证据、开放问题和下一步优先级。'],
+    ['推进下一项','请推进项目待办中优先级最高的一项，并给出执行路径、证据、风险和完成标准。'],
+    ['整理交付 Brief','请把当前工作包整理成面向协作者的项目 Brief，包含背景、资产、结论、待办和风险。']
+  ];
+  return `<div class="project-brief" aria-label="项目总览">
+    <div class="project-brief-head">
+      <div><span>Project Brief</span><b>${esc(contextPackSummaryLabel())}</b></div>
+      ${tag(p.memoryMode==='project'?'project-only':'default',p.memoryMode==='project'?'green':'amber')}
+    </div>
+    <div class="project-brief-metrics">${briefItems.map(([label,value,detail])=>`<div><small>${esc(label)}</small><b>${esc(String(value))}</b><span>${esc(detail)}</span></div>`).join('')}</div>
+    <div class="project-brief-next ${primaryTask?'':'empty'}">
+      <small>${primaryTask?'下一项':'下一步'}</small>
+      <b>${esc(primaryTask?short(primaryTask.title,68):'先捕获会话、资料或回答摘录')}</b>
+      <span>${esc(primaryTask?short(primaryTask.prompt.replace(/\s+/g,' '),120):'项目总览会把工作包资产、项目会话和待办合在一起，方便继续推进。')}</span>
+    </div>
+    <div class="project-brief-actions">
+      <button type="button" onclick="continueContextPackTask()">继续待办</button>
+      <button type="button" onclick="writeContextPackProjectBriefToCanvas()">写入 Brief</button>
+      <button type="button" onclick="showContextPackProjectSessions()">项目会话</button>
+    </div>
+    <div class="project-brief-prompts">${quickPrompts.map(([label,prompt])=>`<button type="button" data-prompt="${esc(prompt)}" onclick="setProjectBriefPrompt(this.dataset.prompt)">${esc(label)}</button>`).join('')}</div>
+  </div>`;
 }
 function contextPackStatusText(){
   return contextPack.updatedAt?`已更新 ${timeText(contextPack.updatedAt)} · 本地浏览器工作包`:'本地浏览器工作包 · 未写入服务端';
@@ -2214,6 +2259,7 @@ function renderContextPackPanel(){
   return `<section id="contextPackPanel" class="context-pack-card ${active?'active':''}" aria-label="工作包">
     <div class="context-pack-head"><div><span>Context Pack</span><b>${esc(contextPack.name||'默认工作包')}</b></div>${active?tag('active','green'):tag('empty')}</div>
     ${renderContextPackPresetBar()}
+    ${contextPackProjectBriefHtml()}
     <label class="field-label" for="contextPackInstructions">工作指令</label>
     <textarea id="contextPackInstructions" rows="4" placeholder="写下这组工作要长期遵循的口径、范围或偏好。" oninput="updateContextPackInstructions(this.value)">${esc(contextPack.instructions)}</textarea>
     <div class="context-pack-memory" aria-label="工作包记忆边界">

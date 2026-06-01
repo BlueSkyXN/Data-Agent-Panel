@@ -20,6 +20,14 @@ def _is_hf_space() -> bool:
     return _truthy(_env("HF_SPACE")) or bool(os.getenv("SPACE_ID") or os.getenv("SPACE_HOST"))
 
 
+def _path_is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _default_data_dir() -> Path:
     explicit = _env("DATA_DIR")
     if explicit:
@@ -63,9 +71,20 @@ class Settings:
     sql_timeout_ms: int = int(_env("SQL_TIMEOUT_MS", "5000"))
     chat_rate_limit_per_minute: int = int(_env("CHAT_RATE_LIMIT_PER_MINUTE", "60"))
     auth_rate_limit_per_minute: int = int(_env("AUTH_RATE_LIMIT_PER_MINUTE", "20"))
+    sqlite_busy_timeout_ms: int = int(_env("SQLITE_BUSY_TIMEOUT_MS", "5000"))
+    sqlite_journal_mode: str = _env("SQLITE_JOURNAL_MODE", "WAL")
+    sqlite_synchronous: str = _env("SQLITE_SYNCHRONOUS", "NORMAL")
+    sqlite_backup_max_age_hours: int = int(_env("SQLITE_BACKUP_MAX_AGE_HOURS", "168"))
+    sqlite_min_free_mb: int = int(_env("SQLITE_MIN_FREE_MB", "256"))
+    sqlite_init_lock_timeout_seconds: int = int(_env("SQLITE_INIT_LOCK_TIMEOUT_SECONDS", "30"))
     max_login_failures: int = int(_env("MAX_LOGIN_FAILURES", "5"))
     lockout_minutes: int = int(_env("LOCKOUT_MINUTES", "15"))
     allow_demo_seed: bool = _truthy(_env("ALLOW_DEMO_SEED", "true"))
+    bootstrap_admin_username: str = _env("BOOTSTRAP_ADMIN_USERNAME", "")
+    bootstrap_admin_password: str = _env("BOOTSTRAP_ADMIN_PASSWORD", "")
+    bootstrap_admin_name: str = _env("BOOTSTRAP_ADMIN_NAME", "Bootstrap Admin")
+    bootstrap_admin_email: str = _env("BOOTSTRAP_ADMIN_EMAIL", "")
+    bootstrap_admin_department: str = _env("BOOTSTRAP_ADMIN_DEPARTMENT", "Platform")
     log_level: str = _env("LOG_LEVEL", "INFO")
     allowed_external_agent_hosts: list[str] = [x.strip() for x in _env("ALLOWED_EXTERNAL_AGENT_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
     codex_mode: str = _env("CODEX_MODE", "mock")  # mock | http | cli | sdk
@@ -108,8 +127,11 @@ class Settings:
             warnings.append("DAP_CORS_ORIGINS allows '*'; restrict origins before production use.")
         if hardened_runtime and self.demo_mode and self.allow_demo_seed:
             warnings.append("DAP demo seed is enabled in a hardened runtime; default demo users and fixtures may be created on first startup.")
-        if hardened_runtime and (not self.demo_mode or not self.allow_demo_seed):
+        bootstrap_admin_configured = bool(self.bootstrap_admin_password)
+        if hardened_runtime and (not self.demo_mode or not self.allow_demo_seed) and not bootstrap_admin_configured:
             warnings.append("DAP demo seed is disabled; provision administrator accounts before first login.")
+        if hardened_runtime and bootstrap_admin_configured:
+            warnings.append("DAP_BOOTSTRAP_ADMIN_PASSWORD is configured; remove it after the initial administrator has been created.")
         if self.is_production and self.demo_mode:
             warnings.append("DAP_DEMO_MODE=true in production; disable demo mode after initial validation.")
         if self.is_production and self.codex_mode == "cli" and not self.codex_cli_enabled:
@@ -118,6 +140,18 @@ class Settings:
             warnings.append("DAP_CODEX_MODE=http but DAP_CODEX_ENDPOINT is empty; Codex adapter will run as prepared handoff only.")
         if self.is_production and self.codex_mode == "sdk" and not self.codex_sdk_enabled:
             warnings.append("DAP_CODEX_MODE=sdk but DAP_CODEX_SDK_ENABLED=false; Codex tasks will only be prepared, not executed via SDK.")
+        if hardened_runtime and _path_is_relative_to(self.data_dir, ROOT):
+            warnings.append("SQLite data dir is inside the repository; set DAP_DATA_DIR or DAP_PERSIST_DIR to a writable persistent runtime path.")
+        if hardened_runtime and _path_is_relative_to(self.data_dir, Path("/tmp")):
+            warnings.append("SQLite data dir is under /tmp and may be ephemeral; set DAP_DATA_DIR or DAP_PERSIST_DIR for durable runtime data.")
+        if hardened_runtime:
+            for env_name, path in [("DAP_DB_PATH", self.db_path), ("DAP_BUSINESS_DB_PATH", self.business_db_path)]:
+                if not _path_is_relative_to(path, self.data_dir):
+                    warnings.append(f"{env_name} is outside DAP_DATA_DIR; keep SQLite DB files under DAP_DATA_DIR or DAP_PERSIST_DIR so backup, locks, and storage checks cover runtime data.")
+                if _path_is_relative_to(path, ROOT):
+                    warnings.append(f"{env_name} points inside the repository; set it under DAP_DATA_DIR or DAP_PERSIST_DIR for durable SQLite data.")
+                if _path_is_relative_to(path, Path("/tmp")):
+                    warnings.append(f"{env_name} points under /tmp and may be ephemeral; set it under DAP_DATA_DIR or DAP_PERSIST_DIR for durable SQLite data.")
         return warnings
 
     def redacted(self) -> dict:
@@ -137,6 +171,13 @@ class Settings:
             "sql_timeout_ms": self.sql_timeout_ms,
             "chat_rate_limit_per_minute": self.chat_rate_limit_per_minute,
             "allowed_external_agent_hosts": self.allowed_external_agent_hosts,
+            "sqlite_busy_timeout_ms": self.sqlite_busy_timeout_ms,
+            "sqlite_journal_mode": self.sqlite_journal_mode,
+            "sqlite_synchronous": self.sqlite_synchronous,
+            "sqlite_backup_max_age_hours": self.sqlite_backup_max_age_hours,
+            "sqlite_min_free_mb": self.sqlite_min_free_mb,
+            "sqlite_init_lock_timeout_seconds": self.sqlite_init_lock_timeout_seconds,
+            "bootstrap_admin_configured": bool(self.bootstrap_admin_password),
             "codex_mode": self.codex_mode,
             "codex_cli_enabled": self.codex_cli_enabled,
             "codex_cli_sandbox": self.codex_cli_sandbox,
