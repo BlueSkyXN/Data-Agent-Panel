@@ -10,7 +10,7 @@ from ..config import get_settings
 from ..rate_limiter import check_rate_limit
 from ..schemas import ChatQuery, FeedbackCreate
 from ..security import audit, can_use_agent, get_current_user
-from ..services import adapters, trace_service
+from ..services import adapters, trace_service, workspace_service
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 settings = get_settings()
@@ -82,7 +82,13 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
     version = db.one("SELECT * FROM agent_versions WHERE id=?", [agent["default_version_id"]])
     if not version:
         raise HTTPException(status_code=404, detail="Agent version not found")
-    temporary_chat = bool((payload.context or {}).get("temporary_chat"))
+    context = dict(payload.context or {})
+    temporary_chat = bool(context.get("temporary_chat"))
+    workspace_context = None
+    workspace_id = str(context.get("workspace_id") or "").strip()
+    if workspace_id:
+        workspace_context = workspace_service.context_for_agent(workspace_id, user)
+        context["workspace"] = workspace_context
     session_id = None if temporary_chat else payload.session_id
     if session_id:
         existing_session = db.one("SELECT * FROM sessions WHERE id=?", [session_id])
@@ -97,7 +103,21 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
     if not temporary_chat:
         db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "user", "content": payload.message, "content_type": "text", "created_at": db.now()})
     trace_id = trace_service.create_trace(user["id"], payload.message, agent_id=agent["id"], session_id=session_id, agent_version=version["version"], request_id=getattr(request.state, "request_id", ""))
-    local_file_summary = _context_pack_local_file_summary(payload.context)
+    if workspace_context:
+        trace_service.add_step(
+            trace_id,
+            "workspace_context",
+            "workspace_context_resolver",
+            {"workspace_id": workspace_context["id"]},
+            {
+                "workspace_id": workspace_context["id"],
+                "canvas_version": workspace_context["canvas_version"],
+                "resource_count": len(workspace_context["resources"]),
+                "note_count": len(workspace_context["notes"]),
+                "open_task_count": len(workspace_context["open_tasks"]),
+            },
+        )
+    local_file_summary = _context_pack_local_file_summary(context)
     if local_file_summary:
         trace_service.add_step(
             trace_id,
@@ -106,7 +126,7 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
             {"local_files_count": len(local_file_summary), "has_local_file_content": True},
             {"local_files": local_file_summary, "temporary_chat": temporary_chat},
         )
-    saved_note_summary = _context_pack_saved_note_summary(payload.context)
+    saved_note_summary = _context_pack_saved_note_summary(context)
     if saved_note_summary:
         trace_service.add_step(
             trace_id,
@@ -115,7 +135,7 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
             {"saved_notes_count": len(saved_note_summary), "has_saved_note_content": True},
             {"saved_notes": saved_note_summary, "temporary_chat": temporary_chat},
         )
-    project_task_summary = _context_pack_project_task_summary(payload.context)
+    project_task_summary = _context_pack_project_task_summary(context)
     if project_task_summary:
         trace_service.add_step(
             trace_id,
@@ -126,13 +146,13 @@ def query(payload: ChatQuery, request: Request, user: dict = Depends(get_current
         )
     start = time.time()
     try:
-        output = adapters.call_adapter(agent, version, payload.message, trace_id, payload.context, user=user)
+        output = adapters.call_adapter(agent, version, payload.message, trace_id, context, user=user)
         duration = int((time.time() - start) * 1000)
         trace_service.finish_trace(trace_id, output, "success", duration)
         if not temporary_chat:
             db.insert("messages", {"id": db.new_id("msg"), "session_id": session_id, "role": "assistant", "content": json.dumps(output, ensure_ascii=False), "content_type": "agent_result", "created_at": db.now()})
             db.update("sessions", "id", session_id, {"updated_at": db.now()})
-        audit("chat_query", user, "agent", agent["id"], {"trace_id": trace_id, "message": payload.message, "temporary_chat": temporary_chat}, request)
+        audit("chat_query", user, "agent", agent["id"], {"trace_id": trace_id, "message": payload.message, "temporary_chat": temporary_chat, "workspace_id": workspace_context["id"] if workspace_context else None}, request)
         return {"session_id": session_id, "trace_id": trace_id, "result": output}
     except Exception as exc:
         duration = int((time.time() - start) * 1000)

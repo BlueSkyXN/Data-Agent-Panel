@@ -71,6 +71,26 @@ def _redact_context_pack_content(value: Any) -> Any:
             safe_item["prompt_redacted"] = bool(prompt)
             safe_tasks.append(safe_item)
         context_pack["project_tasks"] = safe_tasks
+    workspace = redacted.get("workspace")
+    if isinstance(workspace, dict):
+        # A workspace is intentionally delivered to the selected agent, but its
+        # Canvas, notes, and task text must never be copied to Trace/tool-call
+        # storage.  Keep only enough metadata to make the invocation auditable.
+        resources = workspace.get("resources") if isinstance(workspace.get("resources"), list) else []
+        notes = workspace.get("notes") if isinstance(workspace.get("notes"), list) else []
+        tasks = workspace.get("open_tasks") if isinstance(workspace.get("open_tasks"), list) else []
+        redacted["workspace"] = {
+            "id": str(workspace.get("id") or "")[:120],
+            "name": str(workspace.get("name") or "")[:120],
+            "role": str(workspace.get("role") or "")[:20],
+            "canvas_version": workspace.get("canvas_version"),
+            "canvas_chars": len(str(workspace.get("canvas_markdown") or "")),
+            "note_count": len(notes),
+            "open_task_count": len(tasks),
+            "resource_count": len(resources),
+            "resource_types": sorted({str(item.get("resource_type") or "")[:40] for item in resources if isinstance(item, dict)}),
+            "content_redacted": bool(workspace.get("canvas_markdown") or notes or tasks),
+        }
     return redacted
 
 

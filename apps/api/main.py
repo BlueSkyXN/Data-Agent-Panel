@@ -15,7 +15,7 @@ from . import db
 from .config import get_settings
 from .errors import http_exception_handler, unhandled_exception_handler, validation_exception_handler
 from .middleware import RequestContextMiddleware, SecurityHeadersMiddleware
-from .routers import admin, agents, analysis, auth, catalog, chat, codex, data, evals, hf_space, knowledge, reports, semantic, sessions, tasks, traces
+from .routers import admin, agents, analysis, auth, catalog, chat, codex, data, evals, hf_space, knowledge, reports, semantic, sessions, tasks, traces, workspaces
 
 settings = get_settings()
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +69,7 @@ app.include_router(reports.router)
 app.include_router(evals.router)
 app.include_router(admin.router)
 app.include_router(hf_space.router)
+app.include_router(workspaces.router)
 
 
 def _path_ready(path: Path, *, must_exist: bool = True) -> dict:

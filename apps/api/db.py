@@ -25,7 +25,7 @@ DATA_DIR = settings.data_dir
 DB_PATH = settings.db_path
 BUSINESS_DB_PATH = settings.business_db_path
 SCHEMA_PATH = ROOT / "database" / "schema.sql"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SQLITE_INIT_LOCK_FILENAME = ".sqlite-init.lock"
 _JOURNAL_MODES = {"delete", "truncate", "persist", "memory", "wal", "off"}
 _SYNCHRONOUS_MODES = {"off", "normal", "full", "extra"}
@@ -278,6 +278,7 @@ def migrate_platform_schema() -> None:
                 "require_human_approval": "INTEGER NOT NULL DEFAULT 0",
             },
             "datasets": {"data_classification": "TEXT NOT NULL DEFAULT 'internal'"},
+            "project_spaces": {"updated_at": "TEXT"},
             "traces": {"request_id": "TEXT"},
             "audit_logs": {"request_id": "TEXT"},
             "codex_tasks": {
@@ -293,6 +294,8 @@ def migrate_platform_schema() -> None:
                 for col, ddl in cols.items():
                     if col not in current:
                         con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+        if "project_spaces" in existing:
+            con.execute("UPDATE project_spaces SET updated_at=created_at WHERE updated_at IS NULL OR updated_at=''")
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS rate_limit_events (
@@ -959,7 +962,7 @@ def seed_platform() -> None:
     if not _demo_seed_enabled():
         return
 
-    _upsert_by_id("project_spaces", "space_demo", {"id": "space_demo", "name": "独立数据智能体演示空间", "owner_id": "u_admin", "description": "面向销售、客户服务、营销和经营分析的独立演示空间", "status": "active", "created_at": t})
+    _upsert_by_id("project_spaces", "space_demo", {"id": "space_demo", "name": "独立数据智能体演示空间", "owner_id": "u_admin", "description": "面向销售、客户服务、营销和经营分析的独立演示空间", "status": "active", "created_at": t, "updated_at": t})
     for uid, role in [("u_admin", "owner"), ("u_user", "member")]:
         insert_ignore("space_members", {"space_id": "space_demo", "user_id": uid, "role": role})
 

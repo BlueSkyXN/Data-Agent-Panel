@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS project_spaces (
   owner_id TEXT,
   description TEXT,
   status TEXT NOT NULL DEFAULT 'active',
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS space_members (
@@ -66,6 +67,72 @@ CREATE TABLE IF NOT EXISTS space_members (
   role TEXT NOT NULL,
   PRIMARY KEY (space_id, user_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_project_spaces_owner_updated ON project_spaces(owner_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_space_members_user ON space_members(user_id, space_id);
+
+CREATE TABLE IF NOT EXISTS workspace_resources (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  added_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(space_id, resource_type, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_resources_space_created ON workspace_resources(space_id, created_at);
+
+CREATE TABLE IF NOT EXISTS workspace_canvases (
+  space_id TEXT PRIMARY KEY,
+  content_markdown TEXT NOT NULL DEFAULT '',
+  version INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspace_canvas_revisions (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  content_markdown TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(space_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_canvas_revisions_space_version ON workspace_canvas_revisions(space_id, version DESC);
+
+CREATE TABLE IF NOT EXISTS workspace_notes (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content_markdown TEXT NOT NULL,
+  source_type TEXT,
+  source_id TEXT,
+  created_by TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_notes_space_updated ON workspace_notes(space_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS workspace_tasks (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  detail_markdown TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  source_type TEXT,
+  source_id TEXT,
+  created_by TEXT NOT NULL,
+  updated_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_tasks_space_status_updated ON workspace_tasks(space_id, status, updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,

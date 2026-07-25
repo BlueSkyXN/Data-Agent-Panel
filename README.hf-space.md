@@ -15,6 +15,7 @@ app_port: 7860
 
 ```env
 DAP_APP_ENV=hf-space
+DAP_APP_VERSION=0.7.0-calm-workspace
 DAP_HF_SPACE=true
 DAP_DEMO_MODE=true
 DAP_ALLOW_DEMO_SEED=true
@@ -31,6 +32,8 @@ DAP_OPS_TOKEN=<强随机运维只读 token>
 ```
 
 `DAP_OPS_TOKEN` 控制 `/_ops/*` 只读诊断入口。未配置时，HF / production 模式会锁定这些接口并返回不可用状态。`DAP_SECRET_KEY` 缺失时，Docker entrypoint 会在持久化数据目录中生成随机签名密钥；长期部署仍建议显式设置 Space Secret。
+
+当前目标 Space 的非敏感配置、Secret 名称和镜像基线登记在 [`docs/hfs-environment-register.md`](docs/hfs-environment-register.md)。该登记只记录键和值的公开部分，绝不记录任何 Secret 值。
 
 `/_ops/*` 仅暴露 health、system、config、persistence、errors、metrics 和 version 等只读信息，不提供重启、写配置、执行 SQL 或任意命令能力。管理统计、用户、角色、运行配置和审计查看在 `/_admin/` / `/api/admin/*`，并继续要求 `admin` 角色。
 
@@ -50,13 +53,16 @@ DAP_DATA_DIR
 
 ## 部署
 
-把本程序包内容复制到 Space 仓库根目录，然后：
+推荐通过 GitHub Actions 将已审阅的候选提交同步到目标 Space；它会执行静态契约检查、上传 repo root 并 factory rebuild：
 
 ```bash
-git add .
-git commit -m "deploy standalone data agent platform"
-git push
+gh workflow run sync-hf-space.yml \
+  --repo BlueSkyXN/Data-Agent-Panel \
+  --ref <candidate-ref> \
+  -f space_id=BlueSkyXN/Data-Agent-Panel-HFS
 ```
+
+同步是覆盖式发布；不要把未提交的本地工作树或 `.env*`、`data/`、`local/` 内容当作上传候选。Actions 完成后仍必须用受保护的 `/_ops/*` smoke 和 Space runtime/log readback 验证运行态。
 
 ## 线上 smoke test
 

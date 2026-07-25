@@ -25,7 +25,7 @@ set +a
 
 ```env
 DAP_APP_ENV=hf-space
-DAP_APP_VERSION=0.6.0-standalone
+DAP_APP_VERSION=0.7.0-calm-workspace
 DAP_DEMO_MODE=true
 DAP_ALLOW_DEMO_SEED=true
 DAP_HF_SPACE=true
