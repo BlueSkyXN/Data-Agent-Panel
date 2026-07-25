@@ -14,6 +14,9 @@ from .config import get_settings
 
 settings = get_settings()
 
+_WORKSPACE_ROLE_RANK = {"viewer": 10, "editor": 20, "owner": 30}
+_LEGACY_WORKSPACE_ROLE_ALIASES = {"member": "viewer"}
+
 
 def _b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
@@ -112,6 +115,44 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
 
 def role_ids_for_user(user: dict) -> list[str]:
     return [r["id"] for r in db.many("SELECT r.id FROM roles r JOIN user_roles ur ON ur.role_id=r.id WHERE ur.user_id=?", [user["id"]])]
+
+
+def workspace_role_for_user(user: dict, space_id: str) -> str | None:
+    """Return the normalized membership role; callers decide whether archived spaces are writable."""
+    if "admin" in user.get("roles", []):
+        return "owner"
+    member = db.one(
+        """
+        SELECT sm.role
+        FROM space_members sm
+        JOIN project_spaces ps ON ps.id=sm.space_id
+        WHERE sm.space_id=? AND sm.user_id=?
+        """,
+        [space_id, user["id"]],
+    )
+    if not member:
+        return None
+    role = _LEGACY_WORKSPACE_ROLE_ALIASES.get(member.get("role"), member.get("role"))
+    return role if role in _WORKSPACE_ROLE_RANK else None
+
+
+def can_access_workspace(user: dict, space_id: str, minimum_role: str = "viewer") -> bool:
+    required = _WORKSPACE_ROLE_RANK.get(minimum_role)
+    if required is None:
+        raise ValueError(f"Unsupported workspace role: {minimum_role}")
+    role = workspace_role_for_user(user, space_id)
+    return role is not None and _WORKSPACE_ROLE_RANK[role] >= required
+
+
+def require_workspace_role(user: dict, space_id: str, minimum_role: str = "viewer") -> str:
+    """Enforce workspace membership without leaking non-member workspace existence."""
+    role = workspace_role_for_user(user, space_id)
+    required = _WORKSPACE_ROLE_RANK.get(minimum_role)
+    if required is None:
+        raise ValueError(f"Unsupported workspace role: {minimum_role}")
+    if role is None or _WORKSPACE_ROLE_RANK[role] < required:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return role
 
 
 def can_use_agent(user: dict, agent_id: str) -> bool:

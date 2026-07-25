@@ -5,7 +5,7 @@ let datasets = [];
 let metrics = [];
 let dataCatalogFilterState = {q:'', domain:'all', classification:'all', refresh:'all'};
 let activeDatasetId = '';
-let activePage = 'dashboard';
+let activePage = 'workspace';
 let currentTrace = null;
 let lastAnalysisTaskId = '';
 let lastSidebarTrigger = null;
@@ -59,6 +59,9 @@ const CONTEXT_PACK_TASK_CHAR_LIMIT = 1200;
 let contextPack = loadContextPack();
 let contextPackPresets = loadContextPackPresets();
 let activeContextPackPresetId = '';
+let workspaces = [];
+let activeWorkspaceId = localStorage.getItem('dap_active_workspace_id') || '';
+let activeWorkspaceDetail = null;
 
 async function api(path, opts={}){
   const headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
@@ -1376,6 +1379,7 @@ function sampleSqlForDataset(id){const ds=datasets.find(d=>d.id===id); return sa
 function syncWorkbenchSql(){const q=document.getElementById('qDataset'), sql=document.getElementById('qSql'); if(q&&sql) sql.value=sampleSqlForDataset(q.value)}
 function pageCommandDefinitions(){
   return [
+    ['workspace','工作空间','组织问题、分析资产、Canvas、待办和证据','workspace project canvas tasks evidence'],
     ['dashboard','总览','查看控制塔、运营闭环和关键状态','控制塔 首页 overview dashboard'],
     ['agents','Agent Studio','浏览 Agent、Adapter、风险和试用入口','agent studio adapter'],
     ['chat','智能问数','进入会话式问数、工具模式和 Trace 证据','chat 问数 data agent'],
@@ -1566,7 +1570,7 @@ function setActiveNav(page){
     b.classList.toggle('active',active);
     if(active) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
   });
-  const titles={dashboard:'总览',agents:'Agent Studio',chat:'智能问数',analysis:'深度研究',panels:'分析面板',dataops:'数据能力',semantic:'语义中心',codex:'Codex 运行台',reports:'报告中心',knowledge:'知识库',evals:'评测中心',audit:'审计日志',ops:'Ops 控制面',admin:'Admin 控制面'};
+  const titles={workspace:'工作空间',dashboard:'总览',agents:'Agent Studio',chat:'智能问数',analysis:'深度研究',panels:'分析面板',dataops:'数据与语义',semantic:'语义中心',codex:'Codex 运行台',reports:'报告中心',knowledge:'知识库',evals:'评测中心',audit:'证据与审计',ops:'Ops 控制面',admin:'Admin 控制面'};
   document.getElementById('pageTitle').innerText=titles[page]||page;
 }
 function syncSidebarA11y(){
@@ -1638,12 +1642,12 @@ async function autoLogin(){
   try{currentUser=await api('/api/auth/me');document.getElementById('login').classList.add('hidden');document.getElementById('app').classList.remove('hidden');document.getElementById('currentUser').innerText=`${currentUser.name} / ${(currentUser.roles||[]).join(',')}`;await bootstrap();}catch(e){localStorage.removeItem('dap_token')}
 }
 function initialPageFromLocation(){
-  const valid=new Set(['dashboard','agents','chat','analysis','panels','dataops','semantic','codex','reports','knowledge','evals','audit','ops','admin']);
+  const valid=new Set(['workspace','dashboard','agents','chat','analysis','panels','dataops','semantic','codex','reports','knowledge','evals','audit','ops','admin']);
   const params=new URLSearchParams(window.location.search);
   const requested=params.get('page');
   if(requested && valid.has(requested)) return requested;
   if(window.location.pathname.startsWith('/_admin')) return 'admin';
-  return 'dashboard';
+  return 'workspace';
 }
 async function bootstrap(){await refreshCatalog(); await refreshCommandAssets(); showPage(initialPageFromLocation());}
 function resetPageScroll(){
@@ -1658,7 +1662,7 @@ function showPage(name){
   if(!page.innerHTML.trim()) page.innerHTML=loadingState();
   page.classList.remove('hidden');
   resetPageScroll();
-  const renderers={dashboard:renderDashboard,agents:renderAgents,chat:renderChat,analysis:renderAnalysis,panels:renderPanels,dataops:renderDataOps,semantic:renderSemantic,codex:renderCodex,reports:renderReports,knowledge:renderKnowledge,evals:renderEvals,audit:renderAudit,ops:renderOps,admin:renderAdmin};
+  const renderers={workspace:renderWorkspace,dashboard:renderDashboard,agents:renderAgents,chat:renderChat,analysis:renderAnalysis,panels:renderPanels,dataops:renderDataOps,semantic:renderSemantic,codex:renderCodex,reports:renderReports,knowledge:renderKnowledge,evals:renderEvals,audit:renderAudit,ops:renderOps,admin:renderAdmin};
   const rendered=renderers[name] && renderers[name]();
   Promise.resolve(rendered).finally(()=>requestAnimationFrame(resetPageScroll));
 }
@@ -1876,9 +1880,11 @@ function renderChatContextBar(){
   const datasetDetail=ctx.dataset ? [ctx.dataset.business_domain,displayValue(ctx.dataset.data_classification||'internal')].filter(Boolean).join(' · ') : '按问题路由';
   const toolLabels={auto:'自动',analysis:'分析',sql:'SQL',codex:'Codex'};
   const depthLabels={standard:'标准 Trace',full:'完整证据'};
+  const workspace=workspaces.find(item=>item.id===activeWorkspaceId) || activeWorkspaceDetail?.space;
   return `<div class="chat-context-bar" aria-live="polite">
     ${chatContextChip('Agent',agentLabel,displayValue(ctx.agent?.type||'router'),'primary')}
     ${chatContextChip('数据集',datasetLabel,datasetDetail)}
+    ${workspace?chatContextChip('工作空间',workspace.name||workspace.id,'已授权的 Canvas、笔记、待办和资产引用','accent'):''}
     ${chatContextChip('工具',toolLabels[ctx.toolMode]||ctx.toolMode,'会话模式')}
     ${chatContextChip('证据',depthLabels[ctx.evidenceDepth]||ctx.evidenceDepth,'Trace')}
     ${chatContextChip('工作包',contextPackSummaryLabel(),contextPackSummaryDetail(),contextPackHasContent()?'accent':'')}
@@ -3056,6 +3062,7 @@ function selectedChatContext(){
     evidence_depth:document.getElementById('traceDepth')?.value||'standard',
     temporary_chat:temporaryChat
   };
+  if(activeWorkspaceId) base.workspace_id=activeWorkspaceId;
   if(contextPackHasContent()) base.context_pack=contextPackPayload();
   return base;
 }
@@ -4581,6 +4588,177 @@ function auditContentHtml(logs){
   </div>
   <div class="audit-trace-shell section-gap">${traceDrawer('auditTraceBox','审计关联 Trace','从审计事件 detail_json 中打开 Trace，复核输入、SQL、工具调用和执行步骤。')}</div>
   <div class="card section-gap"><div class="card-heading"><h3>原始审计日志</h3>${tag(`${logs.length} logs`)}</div>${renderTable(logs,{columns:['created_at','user_id','action','object_type','object_id','request_id','ip'],limit:160})}</div>`;
+}
+
+function workspaceRoleLabel(role='viewer'){
+  return ({owner:'所有者',editor:'可编辑',viewer:'只读成员',member:'只读成员'})[role] || role;
+}
+function workspaceResourceLabel(type=''){
+  return ({session:'会话',report:'报告',trace:'Trace',dataset:'数据集',analysis_task:'研究任务',codex_task:'Codex 任务'})[type] || type;
+}
+function workspaceResourceAction(resource={}){
+  const id=resource.resource_id || resource.id || '';
+  const type=resource.resource_type || resource.type || '';
+  if(type==='session') return `openSessionCommand('${jsArg(id)}')`;
+  if(type==='report') return `openReportCommand('${jsArg(id)}')`;
+  if(type==='trace') return `showPage('audit');setTimeout(()=>openAuditTrace('${jsArg(id)}','summary',null),120)`;
+  if(type==='dataset') return `openDatasetCommand('${jsArg(id)}')`;
+  if(type==='analysis_task') return `showPage('analysis');setTimeout(()=>{const i=document.getElementById('analysisTaskId');if(i){i.value='${jsArg(id)}';loadLastAnalysisTask(null)}},120)`;
+  if(type==='codex_task') return `showPage('codex');setTimeout(()=>{const i=document.getElementById('codexTaskId');if(i){i.value='${jsArg(id)}';loadCodexTask(null)}},120)`;
+  return '';
+}
+function workspaceEditable(detail=activeWorkspaceDetail){
+  return ['owner','editor'].includes(detail?.role || detail?.space?.role || '');
+}
+function workspaceSummary(space={}){
+  return `${space.description || '尚未添加工作说明'} · ${timeText(space.updated_at || space.created_at)}`;
+}
+function workspaceListHtml(){
+  if(!workspaces.length) return emptyState('还没有工作空间','创建一个工作空间，将问题、分析资产、Canvas 和待办放在同一处。');
+  return `<div class="workspace-list">${workspaces.map(space=>`<button type="button" class="workspace-list-item ${space.id===activeWorkspaceId?'active':''}" onclick="selectWorkspace('${jsArg(space.id)}')"><span>${esc(workspaceRoleLabel(space.role || 'viewer'))}</span><b>${esc(space.name)}</b><small>${esc(short(workspaceSummary(space),72))}</small></button>`).join('')}</div>`;
+}
+function workspaceResourceRows(resources=[]){
+  if(!resources.length) return emptyState('还没有关联资产','将已授权的数据集、会话、报告或 Trace 加入这里，保留原始权限边界。');
+  return `<div class="workspace-resource-list">${resources.map(resource=>{
+    const action=workspaceResourceAction(resource);
+    const title=resource.title || resource.name || resource.resource_id;
+    return `<article class="workspace-resource-row"><div><span>${esc(workspaceResourceLabel(resource.resource_type))}</span><b>${esc(title)}</b><small>${esc(resource.resource_id || '')}</small></div>${action?`<button class="text-action" type="button" onclick="${action}">打开</button>`:''}</article>`;
+  }).join('')}</div>`;
+}
+function workspaceTaskRows(tasks=[], editable=false){
+  if(!tasks.length) return emptyState('没有待办','把分析中的下一项沉淀为工作空间待办，便于跨会话继续。');
+  return `<div class="workspace-task-list">${tasks.map(task=>`<article class="workspace-task ${task.status==='done'?'done':''}"><button type="button" class="workspace-task-toggle" aria-label="${task.status==='done'?'恢复':'完成'}待办" ${editable?'':'disabled'} onclick="toggleWorkspaceTask('${jsArg(task.id)}','${task.status==='done'?'open':'done'}')">${task.status==='done'?'已完成':'待办'}</button><div><b>${esc(task.title)}</b>${task.detail_markdown?`<p>${esc(short(task.detail_markdown,160))}</p>`:''}<small>${esc(timeText(task.updated_at || task.created_at))}</small></div></article>`).join('')}</div>`;
+}
+function workspaceNoteRows(notes=[]){
+  if(!notes.length) return '<p class="workspace-empty-copy">还没有沉淀的结论。分析结果、复核意见或交接说明可作为笔记保存。</p>';
+  return `<div class="workspace-note-list">${notes.slice(0,4).map(note=>`<article><b>${esc(note.title)}</b><p>${esc(short(note.content_markdown,180))}</p><small>${esc(timeText(note.updated_at || note.created_at))}</small></article>`).join('')}</div>`;
+}
+function workspaceDetailHtml(detail){
+  const space=detail.space || detail;
+  const canvas=detail.canvas || {content_markdown:'',version:0};
+  const editable=workspaceEditable(detail);
+  const resources=detail.resources || [];
+  const tasks=detail.tasks || [];
+  const notes=detail.notes || [];
+  const openTasks=tasks.filter(task=>task.status!=='done').length;
+  const resourceCount=resources.length;
+  return `<div class="workspace-product-shell">
+    <aside class="workspace-rail" aria-label="工作空间列表">
+      <div class="workspace-rail-head"><div><span>工作空间</span><b>正在进行的工作</b></div><button class="text-action" type="button" onclick="createWorkspaceFromShell()">新建</button></div>
+      ${workspaceListHtml()}
+      <div class="workspace-rail-foot"><b>共享边界</b><p>成员资格不会扩大数据集、会话、报告或 Trace 的原生访问权限。</p></div>
+    </aside>
+    <section class="workspace-main-surface">
+      <header class="workspace-header"><div><span>持久工作空间</span><h2>${esc(space.name)}</h2><p>${esc(space.description || '把目标、证据、结论和下一步放在同一条可追溯工作链里。')}</p></div><div class="workspace-header-actions"><span class="workspace-role">${esc(workspaceRoleLabel(detail.role || space.role || 'viewer'))}</span><button type="button" onclick="startWorkspaceAnalysis()">继续分析</button></div></header>
+      <section class="workspace-brief" aria-label="工作空间摘要"><div class="workspace-brief-item"><span>目标</span><b>${esc(space.description || '尚未记录目标')}</b><p>用一个可审计的问题组织后续会话、数据、报告与任务。</p></div><div class="workspace-brief-metrics"><div><small>关联资产</small><b>${resourceCount}</b><span>仍按原生权限过滤</span></div><div><small>开放待办</small><b>${openTasks}</b><span>由成员显式维护</span></div><div><small>Canvas</small><b>v${Number(canvas.version || 0)}</b><span>带版本冲突保护</span></div></div></section>
+      <section class="workspace-section"><div class="workspace-section-head"><div><span>工作 Canvas</span><h3>当前结论与分析上下文</h3><p>只在你主动保存时写入工作空间；系统不会把本地文件正文或凭据写入这里。</p></div><span id="workspaceCanvasStatus" class="workspace-save-status">${editable?'可以保存':'只读权限'}</span></div><label class="sr-only" for="workspaceCanvas">工作 Canvas</label><textarea id="workspaceCanvas" ${editable?'':'readonly'} aria-label="工作 Canvas">${esc(canvas.content_markdown || '')}</textarea><div class="workspace-canvas-actions"><span>版本 ${Number(canvas.version || 0)} · ${esc(timeText(canvas.updated_at || space.updated_at || space.created_at))}</span>${editable?'<button type="button" class="secondary" onclick="saveWorkspaceCanvas(this)">保存 Canvas</button>':''}</div></section>
+      <div class="workspace-lower-grid"><section class="workspace-section"><div class="workspace-section-head"><div><span>来源与证据</span><h3>关联资产</h3><p>工作空间只保存引用；打开时仍复核数据、会话、报告和 Trace 的原生授权。</p></div>${editable?'<button type="button" class="text-action" onclick="attachWorkspaceResource()">关联资产</button>':''}</div>${workspaceResourceRows(resources)}</section><section class="workspace-section"><div class="workspace-section-head"><div><span>下一步</span><h3>工作待办</h3><p>用明确的可执行项替代分散在会话中的临时提醒。</p></div>${editable?'<button type="button" class="text-action" onclick="createWorkspaceTask()">新增待办</button>':''}</div>${workspaceTaskRows(tasks,editable)}</section></div>
+    </section>
+    <aside class="workspace-inspector" aria-label="工作空间详情"><section><span>证据与权限</span><h3>工作空间边界</h3><dl><div><dt>空间状态</dt><dd>${esc(space.status || 'active')}</dd></div><div><dt>我的角色</dt><dd>${esc(workspaceRoleLabel(detail.role || space.role || 'viewer'))}</dd></div><div><dt>最近更新</dt><dd>${esc(timeText(space.updated_at || space.created_at))}</dd></div></dl></section><section><div class="workspace-section-head compact"><div><span>结论沉淀</span><h3>笔记</h3></div>${editable?'<button type="button" class="text-action" onclick="createWorkspaceNote()">新增</button>':''}</div>${workspaceNoteRows(notes)}</section><section class="workspace-inspector-notice"><b>审计说明</b><p>创建、保存、关联资产和更新待办都会留下审计摘要；正文、令牌和本地文件内容不会写入审计记录。</p></section></aside>
+  </div>`;
+}
+async function refreshWorkspaces(){
+  workspaces=await api('/api/workspaces');
+  if(!activeWorkspaceId || !workspaces.some(space=>space.id===activeWorkspaceId)) activeWorkspaceId=workspaces[0]?.id || '';
+  if(activeWorkspaceId) localStorage.setItem('dap_active_workspace_id',activeWorkspaceId);
+}
+async function renderWorkspace(){
+  const page=document.getElementById('page-workspace');
+  page.innerHTML=loadingState('正在读取工作空间');
+  try{
+    await refreshWorkspaces();
+    if(!activeWorkspaceId){
+      page.innerHTML=`${pageHeader('工作空间','把分析目标、可见证据、结论和下一步放在同一处。',['RBAC','Trace','版本化 Canvas'])}<section class="workspace-first-run">${emptyState('创建第一个工作空间','工作空间不会扩大原始资源权限；它只组织你已经有权使用的分析资产。')}<button type="button" onclick="createWorkspaceFromShell()">新建工作空间</button></section>`;
+      return;
+    }
+    activeWorkspaceDetail=await api('/api/workspaces/'+encodeURIComponent(activeWorkspaceId));
+    page.innerHTML=`${pageHeader('工作空间','以问题为中心组织分析、证据、结论和可执行的下一步。',['持久化','原生权限不放宽','审计留痕'])}${workspaceDetailHtml(activeWorkspaceDetail)}`;
+  }catch(e){
+    page.innerHTML=`${pageHeader('工作空间','以问题为中心组织分析、证据、结论和可执行的下一步。',['持久化','RBAC'])}${stateBanner('error','无法读取工作空间',e.message)}`;
+  }
+}
+async function selectWorkspace(id){
+  activeWorkspaceId=id;
+  localStorage.setItem('dap_active_workspace_id',id);
+  await renderWorkspace();
+}
+async function createWorkspaceFromShell(){
+  const name=window.prompt('工作空间名称');
+  if(name===null) return;
+  const normalized=name.trim();
+  if(!normalized) return toast('请输入工作空间名称');
+  const description=window.prompt('用一句话说明这个工作空间要解决什么问题（可选）') || '';
+  try{
+    const created=await api('/api/workspaces',{method:'POST',body:JSON.stringify({name:normalized,description:description.trim()})});
+    activeWorkspaceId=created.id;
+    localStorage.setItem('dap_active_workspace_id',activeWorkspaceId);
+    toast('工作空间已创建');
+    showPage('workspace');
+  }catch(e){toast('工作空间创建失败：'+e.message)}
+}
+async function saveWorkspaceCanvas(btn){
+  if(!activeWorkspaceId || !activeWorkspaceDetail) return;
+  const textarea=document.getElementById('workspaceCanvas');
+  const status=document.getElementById('workspaceCanvasStatus');
+  const expectedVersion=Number(activeWorkspaceDetail.canvas?.version || 0);
+  setBusy(btn,true);
+  if(status) status.innerText='正在保存…';
+  try{
+    const canvas=await api(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/canvas`,{method:'PUT',body:JSON.stringify({content_markdown:textarea?.value||'',expected_version:expectedVersion,reason:'workspace_canvas_save'})});
+    activeWorkspaceDetail.canvas=canvas;
+    if(status) status.innerText=`已保存为 v${canvas.version}`;
+    toast('Canvas 已保存');
+  }catch(e){
+    if(status) status.innerText='保存失败：请刷新后处理版本冲突';
+    toast('Canvas 保存失败：'+e.message);
+  }finally{setBusy(btn,false)}
+}
+async function createWorkspaceTask(){
+  if(!activeWorkspaceId) return;
+  const title=window.prompt('待办名称');
+  if(title===null || !title.trim()) return;
+  const detail=window.prompt('补充说明（可选）') || '';
+  try{
+    await api(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/tasks`,{method:'POST',body:JSON.stringify({title:title.trim(),detail_markdown:detail.trim()})});
+    await renderWorkspace();
+    toast('待办已加入工作空间');
+  }catch(e){toast('新增待办失败：'+e.message)}
+}
+async function toggleWorkspaceTask(taskId,status){
+  if(!activeWorkspaceId) return;
+  try{
+    await api(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/tasks/${encodeURIComponent(taskId)}`,{method:'PATCH',body:JSON.stringify({status})});
+    await renderWorkspace();
+  }catch(e){toast('更新待办失败：'+e.message)}
+}
+async function createWorkspaceNote(){
+  if(!activeWorkspaceId) return;
+  const title=window.prompt('笔记标题');
+  if(title===null || !title.trim()) return;
+  const content=window.prompt('记录结论或交接说明');
+  if(content===null || !content.trim()) return;
+  try{
+    await api(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/notes`,{method:'POST',body:JSON.stringify({title:title.trim(),content_markdown:content.trim()})});
+    await renderWorkspace();
+    toast('笔记已保存');
+  }catch(e){toast('保存笔记失败：'+e.message)}
+}
+async function attachWorkspaceResource(){
+  if(!activeWorkspaceId) return;
+  const type=window.prompt('资产类型：session、report、trace、dataset、analysis_task 或 codex_task');
+  if(type===null) return;
+  const resourceType=type.trim();
+  const resourceId=window.prompt('资产 ID');
+  if(resourceId===null || !resourceId.trim()) return;
+  try{
+    await api(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/resources`,{method:'POST',body:JSON.stringify({resource_type:resourceType,resource_id:resourceId.trim()})});
+    await renderWorkspace();
+    toast('资产已关联');
+  }catch(e){toast('关联资产失败：'+e.message)}
+}
+function startWorkspaceAnalysis(){
+  const name=activeWorkspaceDetail?.space?.name || '当前工作空间';
+  setChatDraft(`基于工作空间“${name}”继续分析：请先确认当前目标、已有证据、未解决问题和建议的下一步。`,'agent_router');
 }
 function refreshAuditView(){
   const query=document.getElementById('auditSearch')?.value||'';

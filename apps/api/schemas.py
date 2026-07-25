@@ -144,6 +144,64 @@ class PanelWidgetCreate(BaseModel):
     position_json: dict[str, Any] = Field(default_factory=dict)
 
 
+WorkspaceResourceType = Literal["session", "report", "trace", "dataset", "analysis_task", "codex_task"]
+
+
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+
+
+class WorkspaceUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2000)
+    status: Literal["active", "archived"] | None = None
+
+
+class WorkspaceMemberUpsert(BaseModel):
+    role: Literal["owner", "editor", "viewer"]
+
+
+class WorkspaceResourceCreate(BaseModel):
+    resource_type: WorkspaceResourceType
+    resource_id: str = Field(min_length=1, max_length=120)
+
+
+class WorkspaceCanvasUpdate(BaseModel):
+    content_markdown: str = Field(max_length=50000)
+    expected_version: int = Field(ge=0)
+    reason: str = Field(default="", max_length=120)
+
+
+class WorkspaceNoteCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    content_markdown: str = Field(min_length=1, max_length=50000)
+    source_type: WorkspaceResourceType | None = None
+    source_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class WorkspaceNoteUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    content_markdown: str | None = Field(default=None, min_length=1, max_length=50000)
+    source_type: WorkspaceResourceType | None = None
+    source_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class WorkspaceTaskCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    detail_markdown: str = Field(default="", max_length=12000)
+    source_type: WorkspaceResourceType | None = None
+    source_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class WorkspaceTaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    detail_markdown: str | None = Field(default=None, max_length=12000)
+    status: Literal["open", "done"] | None = None
+    source_type: WorkspaceResourceType | None = None
+    source_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
 class CodexTaskCreate(BaseModel):
     title: str
     task_prompt: str = Field(min_length=1, max_length=20000)

@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="theme-color" content="#101827" />
+  <meta name="theme-color" content="#171717" />
   <title>独立数据智能体平台</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=0.7.0-calm-workspace" />
 </head>
 <body>
   <div id="login" class="login-screen">
@@ -14,9 +14,9 @@
       <div class="login-copy">
         <div class="eyebrow">DATA AGENT PLATFORM</div>
         <h1>独立数据智能体平台</h1>
-        <p>内置智能问数、深度研究、数据能力、语义治理、Trace 证据链、评测运营与 Codex 工程智能体运行工作台。</p>
+        <p>从业务问题开始，在同一工作空间中组织分析、证据、结论、复核与下一步。</p>
         <div class="login-badges">
-          <span>Agent Gateway</span><span>SQL Guard</span><span>Codex CLI / SDK</span><span>Trace</span>
+          <span>可追溯分析</span><span>只读 SQL</span><span>受控工程任务</span><span>RBAC</span>
         </div>
       </div>
       <form class="login-card" onsubmit="event.preventDefault(); login();">
@@ -34,24 +34,13 @@
     <aside class="sidebar" aria-label="主导航">
       <div class="logo"><div>DA</div><span>DATA AGENT</span></div>
       <nav id="nav">
-        <span class="nav-section">工作台</span>
-        <button data-page="dashboard" onclick="showPage('dashboard')">总览</button>
-        <button data-page="agents" onclick="showPage('agents')">Agent Studio</button>
+        <span class="nav-section">主要工作</span>
+        <button data-page="workspace" onclick="showPage('workspace')">工作空间</button>
         <button data-page="chat" onclick="showPage('chat')">智能问数</button>
         <button data-page="analysis" onclick="showPage('analysis')">深度研究</button>
-        <button data-page="panels" onclick="showPage('panels')">分析面板</button>
-        <span class="nav-section">治理</span>
-        <button data-page="dataops" onclick="showPage('dataops')">数据能力</button>
-        <button data-page="semantic" onclick="showPage('semantic')">语义中心</button>
-        <button data-page="codex" onclick="showPage('codex')">Codex 运行台</button>
-        <span class="nav-section">运营</span>
-        <button data-page="reports" onclick="showPage('reports')">报告中心</button>
-        <button data-page="knowledge" onclick="showPage('knowledge')">知识库</button>
-        <button data-page="evals" onclick="showPage('evals')">评测中心</button>
-        <button data-page="audit" onclick="showPage('audit')">审计日志</button>
-        <span class="nav-section">控制面</span>
-        <button data-page="ops" onclick="showPage('ops')">Ops 控制面</button>
-        <button data-page="admin" onclick="showPage('admin')">Admin 控制面</button>
+        <span class="nav-section">治理与运营</span>
+        <button data-page="dataops" onclick="showPage('dataops')">数据与语义</button>
+        <button data-page="audit" onclick="showPage('audit')">证据与审计</button>
       </nav>
       <div class="user-box"><span id="currentUser"></span><button class="ghost-dark" onclick="logout()">退出</button></div>
     </aside>
@@ -62,20 +51,21 @@
           <span></span><span></span><span></span>
         </button>
         <div class="top-title">
-          <div class="eyebrow">Enterprise Data Agent</div>
-          <strong id="pageTitle">总览</strong>
+          <div class="eyebrow">Evidence-first data work</div>
+          <strong id="pageTitle">工作空间</strong>
           <div class="top-status" aria-label="平台安全状态">
             <span>RBAC</span><span>SQL Guard</span><span>Trace</span>
           </div>
         </div>
         <div class="top-actions">
-          <input id="globalSearch" aria-label="全局搜索" aria-controls="commandMenu" aria-expanded="false" placeholder="搜索页面/Agent/报告/会话" onfocus="renderCommandMenu()" oninput="renderCommandMenu()" onkeydown="handleGlobalSearchKey(event)" />
+          <input id="globalSearch" aria-label="全局搜索" aria-controls="commandMenu" aria-expanded="false" placeholder="搜索工作空间、页面、数据或会话" onfocus="renderCommandMenu()" oninput="renderCommandMenu()" onkeydown="handleGlobalSearchKey(event)" />
           <button class="secondary" onclick="globalJump()">搜索</button>
-          <button onclick="showPage('codex')">创建 Codex 任务</button>
+          <button onclick="createWorkspaceFromShell()">新建工作空间</button>
           <div id="commandMenu" class="command-menu hidden" role="listbox" aria-label="全局指挥入口"></div>
         </div>
       </header>
-      <section id="page-dashboard" class="page"></section>
+      <section id="page-workspace" class="page"></section>
+      <section id="page-dashboard" class="page hidden"></section>
       <section id="page-agents" class="page hidden"></section>
       <section id="page-chat" class="page hidden"></section>
       <section id="page-analysis" class="page hidden"></section>
@@ -93,6 +83,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=0.7.0-calm-workspace"></script>
 </body>
 </html>

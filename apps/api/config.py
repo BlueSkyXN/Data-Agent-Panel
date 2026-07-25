@@ -53,7 +53,7 @@ def _default_data_dir() -> Path:
 
 class Settings:
     app_name: str = _env("APP_NAME", "独立数据智能体平台")
-    app_version: str = _env("APP_VERSION", "0.6.0-standalone")
+    app_version: str = _env("APP_VERSION", "0.7.0-calm-workspace")
     app_env: str = _env("APP_ENV", "dev")
     demo_mode: bool = _truthy(_env("DEMO_MODE", "true"))
     secret_key: str = _env("SECRET_KEY", "change-me-in-production")

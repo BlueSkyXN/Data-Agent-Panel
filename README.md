@@ -11,7 +11,7 @@ pinned: false
 
 # 独立数据智能体平台
 
-版本：`0.6.0-standalone`
+版本：`0.7.0-calm-workspace`
 
 这是一套**独立数据智能体平台**程序包，不依赖任何既有项目，不预设任何企业内部业务系统。它内置了通用经营分析样例数据、Agent Gateway、智能问数、深度研究、知识问答、报告中心、数据目录、语义中心、数据质量、Trace 审计、Codex 工程嵌套和 Hugging Face Docker Space 部署能力。
 

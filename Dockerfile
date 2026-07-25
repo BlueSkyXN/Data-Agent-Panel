@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1.7
 # Standalone Data Agent Platform for Hugging Face Docker Spaces.
 # HF Spaces expects a single externally exposed port. This image exposes 7860.
-ARG PYTHON_BASE_IMAGE=python:3.11-slim
+# Resolved from the Docker Hub OCI index for python:3.11-slim on 2026-07-25.
+# Keep an explicit digest here because Hugging Face Space builds do not receive
+# a release-only build argument from the upload workflow.
+ARG PYTHON_BASE_IMAGE=python:3.11-slim@sha256:db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93
 FROM ${PYTHON_BASE_IMAGE}
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
