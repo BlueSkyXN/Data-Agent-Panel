@@ -24,7 +24,7 @@ curl_retry() {
     extra_header+=("-H" "Authorization: Bearer ${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}")
   fi
   local n=1
-  until curl -fsS "${extra_header[@]}" "$url" >"$TMP_BODY"; do
+  until curl -fsS "${extra_header[@]+"${extra_header[@]}"}" "$url" >"$TMP_BODY"; do
     if [ "$n" -ge "$RETRIES" ]; then
       echo "FAILED: $url" >&2
       sed -n '1,80p' "$TMP_BODY" >&2 || true
@@ -44,7 +44,7 @@ check_frame_headers() {
   if [ -n "${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}" ]; then
     extra_header+=("-H" "Authorization: Bearer ${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}")
   fi
-  curl -fsS -D "$TMP_HEADERS" "${extra_header[@]}" "$BASE_URL/" >"$TMP_BODY"
+  curl -fsS -D "$TMP_HEADERS" "${extra_header[@]+"${extra_header[@]}"}" "$BASE_URL/" >"$TMP_BODY"
   if grep -qi '^x-frame-options:' "$TMP_HEADERS"; then
     echo "FAILED: X-Frame-Options blocks Hugging Face iframe embedding" >&2
     grep -i '^x-frame-options:' "$TMP_HEADERS" >&2 || true
@@ -75,7 +75,7 @@ check_ops_cookie_migration() {
   fi
 
   status=$(curl -sS -o "$TMP_BODY" -w '%{http_code}' -c "$TMP_COOKIE" \
-    "${hf_header[@]}" \
+    "${hf_header[@]+"${hf_header[@]}"}" \
     --get --data-urlencode "token=$OPS_TOKEN" \
     "$BASE_URL/_ops/" || true)
   if [ "$status" != "303" ]; then
@@ -84,7 +84,7 @@ check_ops_cookie_migration() {
     return 1
   fi
 
-  status=$(curl -sS -o "$TMP_BODY" -w '%{http_code}' -b "$TMP_COOKIE" "${hf_header[@]}" "$BASE_URL/_ops/" || true)
+  status=$(curl -sS -o "$TMP_BODY" -w '%{http_code}' -b "$TMP_COOKIE" "${hf_header[@]+"${hf_header[@]}"}" "$BASE_URL/_ops/" || true)
   if [ "$status" != "200" ]; then
     echo "FAILED: ops cookie dashboard expected HTTP 200, got $status" >&2
     sed -n '1,80p' "$TMP_BODY" >&2 || true
@@ -117,7 +117,7 @@ if [ -n "${HF_TOKEN:-${HUGGINGFACE_HUB_TOKEN:-}}" ]; then
 fi
 LOGIN_PAYLOAD=$("$PYTHON_BIN" -c 'import json,sys; print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}, ensure_ascii=False))' "$SMOKE_USERNAME" "$SMOKE_PASSWORD")
 TOKEN=$(curl -fsS -X POST "$BASE_URL/api/auth/login" \
-  "${login_headers[@]}" \
+  "${login_headers[@]+"${login_headers[@]}"}" \
   -H 'Content-Type: application/json' \
   -d "$LOGIN_PAYLOAD" | "$PYTHON_BIN" -c 'import sys,json; print(json.load(sys.stdin)["token"])')
 
@@ -133,7 +133,7 @@ else
 fi
 CHAT_PAYLOAD=$("$PYTHON_BIN" -c 'import json,sys; print(json.dumps({"agent_id": "agent_router", "message": sys.argv[1]}, ensure_ascii=False))' "$SMOKE_MESSAGE")
 curl -fsS -X POST "$BASE_URL/api/chat/query" \
-  "${chat_headers[@]}" \
+  "${chat_headers[@]+"${chat_headers[@]}"}" \
   -H 'Content-Type: application/json' \
   -d "$CHAT_PAYLOAD" | "$PYTHON_BIN" -c 'import sys,json; data=json.load(sys.stdin); assert data.get("trace_id"); print("OK: chat trace", data["trace_id"])'
 
