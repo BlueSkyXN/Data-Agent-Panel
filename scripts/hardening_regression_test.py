@@ -33,6 +33,11 @@ def login(client, username, password):
     return {'Authorization': 'Bearer ' + r.json()['token']}
 
 
+def ops_headers():
+    """Use the configured read-only ops token when CI enables the HF boundary."""
+    return {'X-Ops-Token': db.settings.ops_token} if db.settings.ops_token else {}
+
+
 def assert_demo_seed_can_be_disabled():
     original_db_path = db.DB_PATH
     original_business_db_path = db.BUSINESS_DB_PATH
@@ -193,7 +198,7 @@ def assert_platform_metadata_tracks_sqlite_schema(client):
     assert metadata['last_migrated_at']['value'], metadata
     with db.connect_readonly() as con:
         assert con.execute('PRAGMA user_version').fetchone()[0] == db.SCHEMA_VERSION
-    r = client.get('/_ops/persistence')
+    r = client.get('/_ops/persistence', headers=ops_headers())
     assert r.status_code == 200, r.text
     payload = r.json()
     assert payload['schema']['expected_platform_schema_version'] == db.SCHEMA_VERSION, payload
@@ -246,11 +251,11 @@ def assert_sqlite_storage_status_is_exposed(client):
     original_min_free_mb = db.settings.sqlite_min_free_mb
     try:
         db.settings.sqlite_min_free_mb = forced_threshold
-        r = client.get('/_ops/persistence')
+        r = client.get('/_ops/persistence', headers=ops_headers())
         assert r.status_code == 200, r.text
         persistence = r.json()
         assert persistence['sqlite_storage']['status'] == 'low_free_space', persistence
-        r = client.get('/_ops/metrics')
+        r = client.get('/_ops/metrics', headers=ops_headers())
         assert r.status_code == 200, r.text
         assert 'dap_sqlite_storage_ok 0' in r.text, r.text
         assert 'dap_sqlite_storage_free_mb' in r.text, r.text
@@ -311,10 +316,10 @@ def assert_sqlite_reference_status_detects_orphans(client):
         r = client.get('/api/health/ready')
         assert r.status_code == 503, r.text
         assert r.json()['checks']['sqlite_references']['ok'] is False, r.text
-        r = client.get('/_ops/persistence')
+        r = client.get('/_ops/persistence', headers=ops_headers())
         assert r.status_code == 200, r.text
         assert r.json()['sqlite_references']['checks']['active_sqlite_datasets_missing_table']['count'] >= 1, r.text
-        r = client.get('/_ops/metrics')
+        r = client.get('/_ops/metrics', headers=ops_headers())
         assert r.status_code == 200, r.text
         assert 'dap_sqlite_reference_ok 0' in r.text, r.text
         assert 'dap_sqlite_reference_issues' in r.text, r.text
@@ -344,7 +349,7 @@ def assert_sqlite_init_lock_prevents_concurrent_startup(client):
         assert locks['init_lock']['exists'], locks
         assert locks['init_lock']['locked'] is False, locks
         assert locks['init_lock']['holder'].get('operation') == 'init_all', locks
-        r = client.get('/_ops/persistence')
+        r = client.get('/_ops/persistence', headers=ops_headers())
         assert r.status_code == 200, r.text
         assert r.json()['sqlite_locks']['init_lock']['exists'], r.text
     finally:
@@ -514,7 +519,7 @@ def assert_platform_operation_runs_are_persisted_and_exposed(client):
     assert row['finished_at'], row
     assert row['duration_ms'] is not None, row
     assert json.loads(row['detail_json'])['ok'] is True, row
-    r = client.get('/_ops/persistence')
+    r = client.get('/_ops/persistence', headers=ops_headers())
     assert r.status_code == 200, r.text
     payload = r.json()
     assert payload['table_counts']['platform_operation_runs'] >= 1, payload
@@ -597,11 +602,11 @@ def assert_platform_operation_runs_are_persisted_and_exposed(client):
     fresh_backup = db.get_sqlite_backup_freshness(max_age_hours=1)
     assert fresh_backup['status'] == 'fresh', fresh_backup
     assert fresh_backup['last_successful_operation']['id'] == fresh_backup_id, fresh_backup
-    r = client.get('/_ops/persistence')
+    r = client.get('/_ops/persistence', headers=ops_headers())
     assert r.status_code == 200, r.text
     persistence = r.json()
     assert persistence['sqlite_backup_freshness']['status'] == 'fresh', persistence
-    r = client.get('/_ops/metrics')
+    r = client.get('/_ops/metrics', headers=ops_headers())
     assert r.status_code == 200, r.text
     assert 'dap_sqlite_backup_fresh 1' in r.text, r.text
     assert 'dap_sqlite_backup_age_hours' in r.text, r.text
