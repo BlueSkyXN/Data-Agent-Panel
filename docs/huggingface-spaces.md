@@ -9,7 +9,7 @@ exported wrapper
   + immutable Python base-image digest
   + public GitHub source checkout at an immutable commit
   + FastAPI Web/API/Agent Gateway
-  + /persist/data-agent-platform SQLite state
+  + /data/data-agent-platform SQLite state
   + 只读 _ops 运维诊断
 ```
 
@@ -27,7 +27,7 @@ Space 不是完整产品仓库：wrapper bundle 不包含产品 `apps/`、`datab
 | provenance | `BUILD_SOURCE.json` 记录 source repository/ref、wrapper ref、base digest 和生成时间 |
 | 端口 | 单一公开端口 `7860` |
 | 运行用户 | UID/GID `1000` 的 `user` |
-| 数据目录 | 必须是可写 `/persist` mount 下的 `DAP_DATA_DIR`；默认 `/persist/data-agent-platform` |
+| 数据目录 | 必须是可写 `/data` mount 下的 `DAP_DATA_DIR`；默认 `/data/data-agent-platform` |
 | 初始化 | 原有 `hf_entrypoint.sh` 在已验证的持久化目录中幂等初始化 SQLite |
 | 运维 | 保留 `/_ops/healthz`、`/_ops/health`、`/_ops/system`、`/_ops/config`、`/_ops/persistence`、`/_ops/errors`、`/_ops/metrics` |
 | 控制面 | `/_ops/` 只读；`/_admin/` 继续复用平台登录和 RBAC |
@@ -35,12 +35,12 @@ Space 不是完整产品仓库：wrapper bundle 不包含产品 `apps/`、`datab
 ## 3. 持久化策略
 
 ```text
-/persist/data-agent-platform/data_agent_platform.db
-/persist/data-agent-platform/business_sample.db
-/persist/data-agent-platform/codex_tasks/
+/data/data-agent-platform/data_agent_platform.db
+/data/data-agent-platform/business_sample.db
+/data/data-agent-platform/codex_tasks/
 ```
 
-wrapper 会在 `/persist` 缺失、不可写，或 `DAP_DATA_DIR`、数据库、任务目录、HF cache 路径越出
+wrapper 会在 `/data` 缺失、不可写，或 `DAP_DATA_DIR`、数据库、任务目录、HF cache 路径越出
 `DAP_DATA_DIR` 时 fail closed。HFS source lane 不允许 `/data`、`/tmp` 或镜像内数据库作为
 成功启动的后备路径。Space mount、backup、verify、isolated restore 与生产切换是独立 owner
 门禁，不能由 exporter 或静态检查替代。

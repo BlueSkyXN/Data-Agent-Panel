@@ -22,7 +22,7 @@ commit，并验证 checkout `HEAD`。`scripts/export_hfs_space_bundle.py` 只导
 
 1. canonical source/wrapper commit；
 2. 已审批 Python base-image digest；
-3. candidate/目标 Space 的 `/persist` Storage Bucket mount；
+3. candidate/目标 Space 的 `/data` Storage Bucket mount；
 4. SQLite backup、verify 和隔离恢复基线；
 5. Settings 最小键集与生产切换/restart 授权。
 

@@ -14,7 +14,7 @@ commit 与 Python base-image digest。缺少其中任一不可变输入时，导
 - wrapper、最小 manifest 与 exporter 必须已提交并与 `--wrapper-ref` 完全一致；exporter 会拒绝未提交或未跟踪的 wrapper 输入，避免伪造 provenance。
 - 选择已审批的 Python base image digest，例如
   `python:3.11-slim@sha256:<64-hex-digest>`；不能使用浮动 tag。
-- candidate 或目标 Space 必须已有可写的 `/persist` Storage Bucket mount。
+- candidate 或目标 Space 必须已有可写的 `/data` Storage Bucket mount。
 - 先完成数据 owner 批准的 SQLite backup、verify 与隔离恢复；本仓的 wrapper 不执行这些
   状态操作。
 
@@ -70,7 +70,7 @@ PORT
 
 `HF_TOKEN`、`GH_TOKEN` 只属于本机/CI 控制面，绝不作为 Space Settings。`DAP_DATA_DIR`、
 `DAP_DB_PATH`、`DAP_BUSINESS_DB_PATH`、`DAP_CODEX_TASK_DIR` 是本地部署控制项，wrapper
-会将它们约束在 `/persist/data-agent-platform`，不应将其作为普通 Space Variable 分发。
+会将它们约束在 `/data/data-agent-platform`，不应将其作为普通 Space Variable 分发。
 
 Settings 必须从本地 `.env` 事实源执行 `diff → push → readback`。candidate 与 production
 分别选择独立 manifest，不允许临时覆盖 Space ID：
@@ -85,15 +85,15 @@ Secret 仅核对名称，Variable 核对值；清理窗口获批前不得使用 
 
 ## 持久化与运行边界
 
-wrapper 只接受 `/persist` 下的路径，默认使用：
+wrapper 只接受 `/data` 下的路径，默认使用：
 
 ```text
-/persist/data-agent-platform/data_agent_platform.db
-/persist/data-agent-platform/business_sample.db
-/persist/data-agent-platform/codex_tasks/
+/data/data-agent-platform/data_agent_platform.db
+/data/data-agent-platform/business_sample.db
+/data/data-agent-platform/codex_tasks/
 ```
 
-没有可写 `/persist`、路径越出该目录，或 source checkout 失败时均以非零状态失败；不会
+没有可写 `/data`、路径越出该目录，或 source checkout 失败时均以非零状态失败；不会
 降级使用 `/data`、`/tmp` 或镜像内数据库。原有 `hf_entrypoint.sh` 继续负责幂等数据库初始化、
 持久化随机签名密钥与 FastAPI 启动，但在 wrapper 强制的持久化目录内运行。
 

@@ -17,11 +17,11 @@ immutable commit recorded in `BUILD_SOURCE.json`.
 - Source lane: public GitHub source fetched at build time.
 - Provenance: `BUILD_SOURCE.json` records the source commit, wrapper commit, and
   base-image digest used for this exported bundle.
-- Persistence: a writable `/persist` mount is required. SQLite data, task
+- Persistence: a writable `/data` Storage Bucket mount is required. SQLite data, task
   handoffs, generated signing material, and locks remain under
-  `/persist/data-agent-platform`.
+  `/data/data-agent-platform`.
 - Health: `/_ops/healthz` is the canonical read-only operational endpoint.
 
-A missing or unwritable `/persist` mount, an invalid source commit, or a failed
+A missing or unwritable `/data` mount, an invalid source commit, or a failed
 source checkout stops startup or image build instead of falling back to a local
 copy or `/tmp`.

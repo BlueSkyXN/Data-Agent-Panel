@@ -58,7 +58,7 @@ node --check apps/web/static/app.js
 ## 未在当前环境实际验证
 
 - Hugging Face 远程 build 日志。
-- 实际 Space runtime 的 `/persist` bucket 挂载。
+- 实际 Space runtime 的 `/data` bucket 挂载。
 - 真实 Codex CLI / SDK 执行。
 - 真实外部 Agent 接入。
 

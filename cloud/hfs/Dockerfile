@@ -34,7 +34,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 user \
-    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash user
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash user \
+    && install -d -m 0770 -o user -g user /data
 COPY --from=source /source/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY --from=source --chown=user:user /source /app

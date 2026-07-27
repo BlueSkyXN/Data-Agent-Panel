@@ -231,7 +231,8 @@ def check_wrapper_contract() -> None:
 
     entrypoint = (WRAPPER / "entrypoint.sh").read_text(encoding="utf-8")
     for expected_item in (
-        'readonly REQUIRED_PERSIST_ROOT="/persist"',
+        'readonly REQUIRED_PERSIST_ROOT="/data"',
+        'readonly DEFAULT_DATA_DIR="/data/data-agent-platform"',
         "canonicalize_path()",
         "os.path.realpath",
         "set_path_within()",
@@ -248,9 +249,11 @@ def check_wrapper_contract() -> None:
     ):
         if expected_item not in entrypoint:
             raise SystemExit(f"cloud/hfs/entrypoint.sh must contain {expected_item!r}")
-    for forbidden in ("/tmp/data-agent-platform", "/data/data-agent-platform", "DAP_PERSIST_DIR"):
+    for forbidden in ("/tmp/data-agent-platform", "DAP_PERSIST_DIR"):
         if forbidden in entrypoint:
             raise SystemExit(f"cloud/hfs/entrypoint.sh must not provide a persistence fallback: {forbidden!r}")
+    if "install -d -m 0770 -o user -g user /data" not in dockerfile:
+        raise SystemExit("cloud/hfs/Dockerfile must provide the standard writable /data root for local smoke")
 
     dockerignore = (WRAPPER / ".dockerignore").read_text(encoding="utf-8")
     for expected_item in (".env", ".env.*", "apps", "database", "docs", "scripts", "local", "data", "logs", "*.secret", "*.key", "*.pem"):

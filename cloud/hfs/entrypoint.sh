@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly REQUIRED_PERSIST_ROOT="/persist"
-readonly DEFAULT_DATA_DIR="/persist/data-agent-platform"
+readonly REQUIRED_PERSIST_ROOT="/data"
+readonly DEFAULT_DATA_DIR="/data/data-agent-platform"
 
 canonicalize_path() {
   python - "$1" <<'PY'
@@ -40,7 +40,7 @@ set_path_within() {
 }
 
 if [ ! -d "$REQUIRED_PERSIST_ROOT" ] || [ ! -w "$REQUIRED_PERSIST_ROOT" ]; then
-  echo "[data-agent-hfs] ERROR: a writable /persist mount is required" >&2
+  echo "[data-agent-hfs] ERROR: a writable /data mount is required" >&2
   exit 78
 fi
 
