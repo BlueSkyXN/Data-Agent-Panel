@@ -78,7 +78,8 @@ jobs:
             --source-ref "$SOURCE_REF" \
             --wrapper-ref "$GITHUB_SHA" \
             --base-image "$BASE_IMAGE" \
-            --manifest "$HFS_MANIFEST"
+            --manifest "$HFS_MANIFEST" \
+            --require-origin-main
           test -f "$BUNDLE_DIR/BUILD_SOURCE.json"
           test ! -e "$BUNDLE_DIR/apps"
           test ! -e "$BUNDLE_DIR/.env"

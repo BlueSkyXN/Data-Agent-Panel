@@ -280,6 +280,7 @@ def check_hfs_workflow() -> None:
         "BUILD_SOURCE.json",
         "cmp ",
         "candidate Space must be private",
+        "--require-origin-main",
     )
     for fragment in required_fragments:
         if fragment not in workflow:
@@ -322,7 +323,7 @@ def check_exporter_contract() -> None:
         raise SystemExit("HFS exporter does not reject product or private paths")
 
     wrapper_ref = git_ref("HEAD")
-    source_ref = git_ref("origin/main")
+    source_ref = wrapper_ref
     if hfs_inputs_dirty():
         with tempfile.TemporaryDirectory(prefix="dap-hfs-dirty-export-") as tmp:
             result = subprocess.run(

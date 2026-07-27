@@ -162,7 +162,8 @@ def export_bundle(args: argparse.Namespace) -> None:
     base_image = require_image_digest(args.base_image)
     require_commit(source_ref, "--source-ref")
     require_commit(wrapper_ref, "--wrapper-ref")
-    require_canonical_source_commit(source_ref)
+    if args.require_origin_main:
+        require_canonical_source_commit(source_ref)
     require_wrapper_inputs_at_ref(wrapper_ref)
     manifest = args.manifest.resolve()
     if manifest not in {ROOT / "hfs-dev.toml", ROOT / "hfs-dev.candidate.toml"}:
@@ -220,6 +221,11 @@ def main() -> int:
         required=True,
         type=Path,
         help="explicit production or candidate HFS manifest",
+    )
+    parser.add_argument(
+        "--require-origin-main",
+        action="store_true",
+        help="require the source commit to be reachable from origin/main for publication",
     )
     args = parser.parse_args()
     export_bundle(args)
