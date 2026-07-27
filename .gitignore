@@ -21,3 +21,11 @@ data/
 logs/
 local/
 node_modules/
+/.playwright-cli
+
+# Local HFS ledger values; committed templates stay explicitly allowlisted.
+config.toml
+.env.*
+!.env.example
+!.env.sample
+!.env.template

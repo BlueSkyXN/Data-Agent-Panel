@@ -55,7 +55,7 @@ DAP_OPS_TOKEN=<strong random read-only ops token>
 
 `DAP_DEMO_MODE=false` 或 `DAP_ALLOW_DEMO_SEED=false` 会跳过默认 `admin` / `user` 账号和内置演示 Agent、数据集、面板、知识库、评测集等平台 fixture。首次启动空 SQLite 库时，可临时设置 `DAP_BOOTSTRAP_ADMIN_USERNAME` / `DAP_BOOTSTRAP_ADMIN_PASSWORD` 创建管理员账号；密码只用于初始化哈希写库，不会出现在 redacted config 中。账号创建后应移除 `DAP_BOOTSTRAP_ADMIN_PASSWORD`。
 
-HFS / production 下建议只设置 `DAP_DATA_DIR` 或 `DAP_PERSIST_DIR`，并让 `DAP_DB_PATH` / `DAP_BUSINESS_DB_PATH` 保持默认派生路径。若显式设置 DB path，必须放在同一个持久化目录内；指向 repo 内、`/tmp` 或 `DAP_DATA_DIR` 外部时，运行配置会给出 warning。
+本地/非 HFS 部署下，`DAP_DATA_DIR` 或 `DAP_PERSIST_DIR` 应与 `DAP_DB_PATH` / `DAP_BUSINESS_DB_PATH` 保持同一持久化目录。HFS v2 thin wrapper 例外：它要求 `/persist` Storage Bucket mount，并将 `DAP_DATA_DIR` 默认固定为 `/persist/data-agent-platform`；显式数据库、任务目录或 HF cache 路径必须仍在该目录内，越界或 `/persist` 不可写会直接失败，不会回退到 repo 内、`/data` 或 `/tmp`。这些路径属于 wrapper 的本地部署控制，不作为普通 Space Variable 分发。
 
 不要把真实 secret、内部 URL、客户数据或 `.env.local` 提交进 GitHub 或同步到公开产物中。
 

@@ -7,14 +7,14 @@ Key files: `ci.yml`, `sync-hf-space.yml`.
 ## Why this is high-risk
 
 - CI is the authoritative place for dependency install, full app smoke, Docker build/run smoke, and HF sync validation.
-- `sync-hf-space.yml` can delete and replace Space contents through `hf upload --delete "*"`.
+- `sync-hf-space.yml` uploads only a provenance-bound thin wrapper after rejecting a non-thin remote Space tree; it never deletes or replaces a full Space tree.
 - Workflow excludes prevent local data, logs, ignored exports, and secrets from being uploaded.
 
 ## Required before changes
 
 - Keep `python scripts/static_check.py` in CI before heavier smoke or HF upload steps.
 - Preserve Python 3.11 and Node availability unless there is a deliberate runtime migration.
-- For HF sync changes, verify `hfs-dev.toml`, root Dockerfile, README frontmatter, `hf_entrypoint.sh`, and `scripts/hf_space_smoke.sh` still align.
+- For HF sync changes, verify `hfs-dev.toml`, `cloud/hfs/`, `scripts/export_hfs_space_bundle.py`, `hf_entrypoint.sh`, and `scripts/hf_space_smoke.sh` still align; root Dockerfile is a local/CI product image.
 - Treat `HF_TOKEN` and Space secrets as external state; do not echo them.
 
 ## Do not

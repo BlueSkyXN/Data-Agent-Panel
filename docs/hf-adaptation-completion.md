@@ -1,5 +1,7 @@
 # Hugging Face Space 适配完成记录
 
+> 历史记录：本文描述 v0.5 的 repo-root Space 适配，已被当前 HFS v2 Pattern B thin source wrapper 取代。当前部署契约以 `README.hf-space.md`、`docs/huggingface-spaces.md` 和 `cloud/hfs/` 为准。
+
 版本：`0.5.0-hf-space`
 
 当前补充：后续版本已将 HF / production 模式下未配置 `DAP_OPS_TOKEN` 的 `/_ops/*`

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-本仓库实现一套独立数据智能体平台：FastAPI 后端、静态 Web 工作台、SQLite demo/runtime data、Trace/audit/RBAC/SQL Guard、Codex 工程任务嵌套，以及 Hugging Face Docker Space Pattern A 部署入口。
+本仓库实现一套独立数据智能体平台：FastAPI 后端、静态 Web 工作台、SQLite demo/runtime data、Trace/audit/RBAC/SQL Guard、Codex 工程任务嵌套，以及 Hugging Face Docker Space Pattern B thin source wrapper 部署入口。
 
 ## Codex startup behavior
 
@@ -27,7 +27,7 @@
 | `scripts/` | Local/CI validation scripts、smoke scripts、HFS helpers、Codex install helpers | Yes | 修改任何 validation、smoke、HF helper、installer 或 shell/Python script 前 |
 | `services/codex_sdk_bridge/` | Optional Node ESM bridge for `@openai/codex-sdk` | Yes | 修改 Node bridge package、SDK invocation、task dispatch surface 前 |
 | `local/data-agent-platform-standalone/` | Ignored local standalone export/copy | Yes | 用户明确要求改本机导出副本时；默认不要把它当主仓源码 |
-| Root deployment files | `Dockerfile*`、`docker-compose*.yml`、`hf_entrypoint.sh`、`hfs-dev.toml`、`README*.md`、`.env.example` | No | 修改 HF/Docker/runtime config 时同时检查 `.github/workflows/` 和 `scripts/AGENTS.md` |
+| Root deployment files | `Dockerfile*`、`docker-compose*.yml`、`hf_entrypoint.sh`、`hfs-dev.toml`、`README*.md`、`.env.example` | No | 修改 HF/Docker/runtime config 时同时检查 `cloud/hfs/`、`.github/workflows/` 和 `scripts/AGENTS.md` |
 
 ## On-demand cat protocol
 
@@ -59,7 +59,7 @@ Commands below are confirmed from `README.md`, `.github/workflows/ci.yml`, `.git
 | `npm run run-task` | Execute optional Codex SDK bridge script | `services/codex_sdk_bridge/` | Requires `npm install` in that directory and real SDK/runtime configuration; do not run by default. |
 | `docker build --build-arg PYTHON_BASE_IMAGE=python:3.11-slim -t data-agent-panel:test .` | Docker image build used by CI docker-smoke | repo | Requires Docker and network/cache; do not run locally unless user asks. |
 | `bash scripts/hf_space_smoke.sh <base-url>` | Remote-style Hugging Face Space smoke | deployed app | Requires live URL; protected/private spaces need `OPS_TOKEN` and possibly auth env. |
-| `hf upload "$SPACE_ID" . . --repo-type space --delete "*"` | Upload tracked repo root to Hugging Face Space; workflow adds commit message and required excludes | CI workflow | Requires `HF_TOKEN`; use workflow unless user explicitly asks for manual sync. |
+| `python scripts/export_hfs_space_bundle.py --output <empty-dir> --source-ref <commit> --wrapper-ref <commit> --base-image <image@sha256:digest>` | Export a provenance-bound thin Space wrapper | repo | Requires immutable inputs and a clean committed wrapper tree; the manual workflow uploads only this bundle after thin-tree preflight. |
 
 ## Global rules
 
@@ -70,7 +70,7 @@ Commands below are confirmed from `README.md`, `.github/workflows/ci.yml`, `.git
 - Keep demo mode isolated from production/HF configuration. Treat `DAP_DEMO_MODE`, `DAP_ALLOW_DEMO_SEED`, `DAP_SECRET_KEY`, `DAP_OPS_TOKEN`, `DAP_CORS_ORIGINS`, and `DAP_ALLOWED_EXTERNAL_AGENT_HOSTS` as security-sensitive.
 - Environment variables use the `DAP_` prefix. Commit only `.env.example`; do not commit `.env`, `.env.local`, real tokens, real account data, private hosts, or secrets.
 - Prefer additive schema/runtime changes. Existing installs may run newer code over older demo DBs, so keep `apps/api/db.py` additive migration behavior in mind.
-- Keep Hugging Face Space as Pattern A / repo-root. `hfs-dev.toml`, root `Dockerfile`, root `README.md` frontmatter, `hf_entrypoint.sh`, `scripts/hf_space_smoke.sh`, and `.github/workflows/sync-hf-space.yml` must stay aligned.
+- Keep Hugging Face Space as Pattern B / `cloud/hfs` thin source wrapper. `hfs-dev.toml`, `cloud/hfs/`, `scripts/export_hfs_space_bundle.py`, `hf_entrypoint.sh`, `scripts/hf_space_smoke.sh`, and `.github/workflows/sync-hf-space.yml` must stay aligned. Root `Dockerfile` remains the local/CI product image, not the Space build context.
 - This repo has no root JavaScript build system. The frontend is static HTML/CSS/JS served by FastAPI.
 - The only Node package in tracked source is the optional private package under `services/codex_sdk_bridge/`.
 - For local validation, prefer lightweight checks. Do not install external dependencies, run Docker builds, run full smoke suites, or deploy/sync externally unless the user asks.

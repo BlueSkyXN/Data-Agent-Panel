@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+local
+data
+logs
+apps
+database
+docs
+scripts
+__pycache__
+*.pyc
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
