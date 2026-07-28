@@ -273,7 +273,7 @@ def check_hfs_workflow() -> None:
         "git cat-file -e",
         "git merge-base --is-ancestor",
         "export_hfs_space_bundle.py",
-        "huggingface_hub[cli]==1.5.0",
+        "huggingface_hub[cli]==1.24.0",
         "list_repo_files",
         "ALLOWED_SPACE_FILES",
         "hf upload",
