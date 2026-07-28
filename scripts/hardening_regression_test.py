@@ -23,7 +23,7 @@ from apps.api.rate_limiter import check_rate_limit
 from apps.api.routers import data as data_router
 from apps.api.services.adapters import call_generic_http
 from scripts.sqlite_maintenance import copy_sqlite_snapshot, maintain_databases
-from scripts.sqlite_backup import backup_databases, rehearse_restore, verify_backup_dir
+from scripts.sqlite_backup import backup_databases, main as sqlite_backup_main, rehearse_restore, verify_backup_dir
 from scripts.sqlite_ops_lock import SQLiteOpsLockTimeout, sqlite_ops_lock
 
 
@@ -393,6 +393,41 @@ def assert_sqlite_backup_creates_verified_snapshot():
             assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
 
 
+def assert_startup_backup_cli_records_full_chain():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        backup_root = root / 'backups'
+        backup_name = 'startup-regression'
+        backup_dir = backup_root / backup_name
+        rehearsal_dir = root / 'restore-rehearsal'
+        lock_path = root / '.sqlite-ops.lock'
+        common = ['--lock-path', str(lock_path), '--lock-timeout-seconds', '0']
+        assert sqlite_backup_main([
+            '--platform-db', str(db.DB_PATH),
+            '--business-db', str(db.BUSINESS_DB_PATH),
+            '--output-dir', str(backup_root),
+            '--name', backup_name,
+            '--retention-count', '7',
+            *common,
+        ]) == 0
+        assert sqlite_backup_main(['--verify-dir', str(backup_dir), *common]) == 0
+        assert sqlite_backup_main([
+            '--rehearse-restore-dir', str(backup_dir),
+            '--rehearsal-output-dir', str(rehearsal_dir),
+            *common,
+        ]) == 0
+        rows = db.many(
+            "SELECT status,detail_json FROM platform_operation_runs "
+            "WHERE operation='sqlite_backup' ORDER BY rowid DESC LIMIT 3"
+        )
+        assert len(rows) == 3, rows
+        assert all(row['status'] == 'ok' for row in rows), rows
+        modes = [json.loads(row['detail_json'])['mode'] for row in reversed(rows)]
+        assert modes == ['backup', 'verify', 'restore_rehearsal'], modes
+        assert backup_dir.exists()
+        assert rehearsal_dir.exists()
+
+
 def assert_sqlite_maintenance_runs_on_copies():
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -715,6 +750,7 @@ def main():
     assert_sqlite_maintenance_prunes_runtime_tables()
     assert_sqlite_ops_lock_prevents_overlap()
     assert_platform_operation_runs_are_persisted_and_exposed(client)
+    assert_startup_backup_cli_records_full_chain()
 
     # Profile and panel direct API calls should return a usable trace id.
     r = client.get('/api/data/profile/dataset_orders', headers=admin)
