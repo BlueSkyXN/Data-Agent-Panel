@@ -60,4 +60,29 @@ db.init_all(reset=False)
 print(f"[data-agent-hf] initialized database at {settings.db_path}")
 PY
 
+STARTUP_BACKUP_NAME="$(python - <<'PY'
+from datetime import datetime, timezone
+from uuid import uuid4
+
+timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+print(f"startup-{timestamp}-{uuid4().hex}")
+PY
+)"
+STARTUP_BACKUP_ROOT="${DAP_DATA_DIR}/backups"
+STARTUP_BACKUP_DIR="${STARTUP_BACKUP_ROOT}/${STARTUP_BACKUP_NAME}"
+STARTUP_REHEARSAL_DIR="/tmp/dap-restore-rehearsals/${STARTUP_BACKUP_NAME}"
+
+echo "[data-agent-hf] creating verified startup backup ${STARTUP_BACKUP_NAME}"
+python scripts/sqlite_backup.py \
+  --platform-db "${DAP_DB_PATH}" \
+  --business-db "${DAP_BUSINESS_DB_PATH}" \
+  --output-dir "${STARTUP_BACKUP_ROOT}" \
+  --name "${STARTUP_BACKUP_NAME}" \
+  --retention-count 7
+python scripts/sqlite_backup.py --verify-dir "${STARTUP_BACKUP_DIR}"
+python scripts/sqlite_backup.py \
+  --rehearse-restore-dir "${STARTUP_BACKUP_DIR}" \
+  --rehearsal-output-dir "${STARTUP_REHEARSAL_DIR}"
+echo "[data-agent-hf] startup backup, verification, and isolated restore rehearsal passed"
+
 exec python -m uvicorn apps.api.main:app --host 0.0.0.0 --port "${PORT}" --workers "${DAP_UVICORN_WORKERS:-1}"

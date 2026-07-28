@@ -408,6 +408,26 @@ def check_shell_scripts() -> None:
         run(["bash", "-n", str(script.relative_to(ROOT))])
 
 
+def check_hf_entrypoint_backup_contract() -> None:
+    entrypoint = (ROOT / "hf_entrypoint.sh").read_text(encoding="utf-8")
+    init_pos = entrypoint.find("db.init_all(reset=False)")
+    backup_pos = entrypoint.find("python scripts/sqlite_backup.py")
+    uvicorn_pos = entrypoint.find("exec python -m uvicorn")
+    if not 0 <= init_pos < backup_pos < uvicorn_pos:
+        raise SystemExit("hf_entrypoint.sh must fail closed on startup backup before Uvicorn")
+    for fragment in (
+        'STARTUP_BACKUP_ROOT="${DAP_DATA_DIR}/backups"',
+        'STARTUP_BACKUP_DIR="${STARTUP_BACKUP_ROOT}/${STARTUP_BACKUP_NAME}"',
+        'STARTUP_REHEARSAL_DIR="/tmp/dap-restore-rehearsals/${STARTUP_BACKUP_NAME}"',
+        '--retention-count 7',
+        '--verify-dir "${STARTUP_BACKUP_DIR}"',
+        '--rehearse-restore-dir "${STARTUP_BACKUP_DIR}"',
+        '--rehearsal-output-dir "${STARTUP_REHEARSAL_DIR}"',
+    ):
+        if fragment not in entrypoint:
+            raise SystemExit(f"hf_entrypoint.sh startup backup contract is missing {fragment!r}")
+
+
 def check_javascript() -> None:
     node = shutil.which("node")
     if not node:
@@ -429,6 +449,7 @@ def main() -> int:
     run([sys.executable, "scripts/check_hfs_alignment.py", "."])
     check_python_compile()
     check_shell_scripts()
+    check_hf_entrypoint_backup_contract()
     check_javascript()
     print("Static checks passed")
     return 0
