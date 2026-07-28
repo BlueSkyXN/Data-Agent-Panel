@@ -1,5 +1,7 @@
 # Hugging Face Space 适配完成记录
 
+> 历史记录：本文描述 v0.5 的 repo-root Space 适配，已被当前 HFS v2 Pattern B thin source wrapper 取代。当前部署契约以 `README.hf-space.md`、`docs/huggingface-spaces.md` 和 `cloud/hfs/` 为准。
+
 版本：`0.5.0-hf-space`
 
 当前补充：后续版本已将 HF / production 模式下未配置 `DAP_OPS_TOKEN` 的 `/_ops/*`
@@ -56,7 +58,7 @@ node --check apps/web/static/app.js
 ## 未在当前环境实际验证
 
 - Hugging Face 远程 build 日志。
-- 实际 Space runtime 的 `/persist` bucket 挂载。
+- 实际 Space runtime 的 `/data` bucket 挂载。
 - 真实 Codex CLI / SDK 执行。
 - 真实外部 Agent 接入。
 

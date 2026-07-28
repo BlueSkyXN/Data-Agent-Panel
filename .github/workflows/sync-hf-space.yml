@@ -1,48 +1,165 @@
-name: Sync Hugging Face Space
+name: Publish HFS thin source wrapper
 
 on:
   workflow_dispatch:
     inputs:
-      space_id:
-        description: Hugging Face Space ID
+      target:
+        description: Explicit HFS manifest profile
         required: true
-        default: BlueSkyXN/Data-Agent-Panel-HFS
+        type: choice
+        options:
+          - candidate
+          - production
+      source_ref:
+        description: Approved full 40-character product commit SHA
+        required: true
+        type: string
+      base_image:
+        description: Approved Python base image pinned with @sha256 digest
+        required: true
+        type: string
+      confirm_upload:
+        description: Type PUBLISH_WRAPPER to confirm this non-destructive wrapper upload
+        required: true
+        default: ""
+        type: string
 
 jobs:
-  sync:
+  publish-wrapper:
+    if: inputs.confirm_upload == 'PUBLISH_WRAPPER'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      SPACE_ID: ${{ inputs.space_id }}
+      HFS_TARGET: ${{ inputs.target }}
+      HFS_MANIFEST: ${{ inputs.target == 'candidate' && 'hfs-dev.candidate.toml' || 'hfs-dev.toml' }}
+      SOURCE_REF: ${{ inputs.source_ref }}
+      BASE_IMAGE: ${{ inputs.base_image }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Install Hugging Face CLI
-        run: python -m pip install -U "huggingface_hub[cli]"
-      - name: Verify required secret
-        run: test -n "$HF_TOKEN"
+      - name: Validate manual immutable inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$HF_TOKEN"
+          [[ "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_IMAGE" =~ ^[A-Za-z0-9._/:+-]+@sha256:[0-9a-f]{64}$ ]]
+          git cat-file -e "${SOURCE_REF}^{commit}"
+          git merge-base --is-ancestor "$SOURCE_REF" origin/main
+      - name: Load target from selected manifest
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path(os.environ["HFS_MANIFEST"]).read_text(encoding="utf-8"))
+          space_id = manifest.get("space", "")
+          if not isinstance(space_id, str) or space_id.count("/") != 1:
+              raise SystemExit(f"invalid Space id in {os.environ['HFS_MANIFEST']}: {space_id!r}")
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env_file:
+              env_file.write(f"SPACE_ID={space_id}\n")
+          PY
       - name: Static contract checks
         run: python scripts/static_check.py
-      - name: Upload tracked Space root
+      - name: Export provenance-bound wrapper bundle
+        shell: bash
         run: |
-          hf upload "$SPACE_ID" . . \
+          set -euo pipefail
+          BUNDLE_DIR="$RUNNER_TEMP/data-agent-panel-hfs-wrapper"
+          python scripts/export_hfs_space_bundle.py \
+            --output "$BUNDLE_DIR" \
+            --source-ref "$SOURCE_REF" \
+            --wrapper-ref "$GITHUB_SHA" \
+            --base-image "$BASE_IMAGE" \
+            --manifest "$HFS_MANIFEST" \
+            --require-origin-main
+          test -f "$BUNDLE_DIR/BUILD_SOURCE.json"
+          test ! -e "$BUNDLE_DIR/apps"
+          test ! -e "$BUNDLE_DIR/.env"
+      - name: Install Hugging Face CLI
+        run: python -m pip install "huggingface_hub[cli]==1.5.0"
+      - name: Preflight target Space wrapper boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          ALLOWED_SPACE_FILES = {
+              ".dockerignore",
+              ".gitattributes",
+              "BUILD_SOURCE.json",
+              "Dockerfile",
+              "README.md",
+              "entrypoint.sh",
+              "hfs-dev.toml",
+          }
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          info = api.repo_info(repo_id=os.environ["SPACE_ID"], repo_type="space")
+          if os.environ["HFS_TARGET"] == "candidate" and not info.private:
+              raise SystemExit("candidate Space must be private before wrapper upload")
+          files = set(api.list_repo_files(repo_id=os.environ["SPACE_ID"], repo_type="space"))
+          unexpected = files - ALLOWED_SPACE_FILES
+          if unexpected:
+              raise SystemExit(
+                  "refusing to upload to a Space that is not already an empty or thin-wrapper tree; "
+                  "old full-repository cleanup requires a separate owner-approved procedure"
+              )
+          PY
+      - name: Upload approved wrapper bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          hf upload "$SPACE_ID" "$RUNNER_TEMP/data-agent-panel-hfs-wrapper" . \
             --repo-type space \
-            --delete "*" \
-            --commit-message "Sync Data Agent Panel from GitHub ${GITHUB_SHA}" \
-            --exclude ".git/**" \
-            --exclude ".github/**" \
-            --exclude ".env*" \
-            --exclude "local/**" \
-            --exclude "data/**" \
-            --exclude "logs/**" \
-            --exclude "__pycache__/**" \
-            --exclude "*.pyc" \
-            --exclude "*.secret" \
-            --exclude "*.key" \
-            --exclude "*.pem" \
-            --exclude "*.p12" \
-            --exclude "*.pfx"
-      - name: Factory rebuild Space
-        run: hf spaces restart "$SPACE_ID" --factory-reboot
+            --commit-message "Publish Data Agent Panel HFS wrapper source ${SOURCE_REF} wrapper ${GITHUB_SHA}"
+      - name: Read back thin boundary and provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          READBACK_DIR="$RUNNER_TEMP/data-agent-panel-hfs-readback"
+          hf download "$SPACE_ID" BUILD_SOURCE.json \
+            --repo-type space \
+            --local-dir "$READBACK_DIR"
+          cmp "$RUNNER_TEMP/data-agent-panel-hfs-wrapper/BUILD_SOURCE.json" "$READBACK_DIR/BUILD_SOURCE.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+
+          ALLOWED_SPACE_FILES = {
+              ".dockerignore",
+              ".gitattributes",
+              "BUILD_SOURCE.json",
+              "Dockerfile",
+              "README.md",
+              "entrypoint.sh",
+              "hfs-dev.toml",
+          }
+          files = set(HfApi(token=os.environ["HF_TOKEN"]).list_repo_files(
+              repo_id=os.environ["SPACE_ID"], repo_type="space"
+          ))
+          unexpected = files - ALLOWED_SPACE_FILES
+          if unexpected:
+              raise SystemExit("Space readback contains files outside the approved thin-wrapper allowlist")
+          source = json.loads(
+              (Path(os.environ["RUNNER_TEMP"]) / "data-agent-panel-hfs-readback" / "BUILD_SOURCE.json").read_text()
+          )
+          assert source["source_ref"] == os.environ["SOURCE_REF"]
+          assert source["wrapper_ref"] == os.environ["GITHUB_SHA"]
+          assert source["base_image"] == os.environ["BASE_IMAGE"]
+          print("Space thin-wrapper boundary and immutable provenance readback match the approved release.")
+          PY
+
+# This workflow intentionally does not delete existing Space files, change Settings,
+# restart/factory-reboot a Space, run a live smoke, or migrate persistent data.
+# Those operations require their own owner-approved procedure and readback evidence.

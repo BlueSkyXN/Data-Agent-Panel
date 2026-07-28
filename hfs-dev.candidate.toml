@@ -1,11 +1,10 @@
 standard = "2.0"
 project = "data-agent-panel"
-space = "BlueSkyXN/Data-Agent-Panel-HFS"
+space = "BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate"
 sovereignty = "sovereign"
 lane = "source"
 version_source = "commit"
 
-# These names map local deployment values to Space Settings; no values belong here.
 local_only = ["HF_TOKEN", "GH_TOKEN"]
 secrets = [
   "DAP_SECRET_KEY",

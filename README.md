@@ -1,14 +1,3 @@
----
-title: Standalone Data Agent Platform
-emoji: 📊
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-suggested_hardware: cpu-upgrade
-pinned: false
----
-
 # 独立数据智能体平台
 
 版本：`0.7.0-calm-workspace`
@@ -94,13 +83,12 @@ docker compose up --build
 
 ## Hugging Face Space 部署
 
-本仓库根目录已适配 Hugging Face Docker Space：
+Hugging Face Docker Space 采用 Pattern B thin source wrapper：
 
-- `README.md` 顶部包含 `sdk: docker` 和 `app_port: 7860`。
-- 根目录 `Dockerfile` 是 Space 构建入口。
-- `hf_entrypoint.sh` 自动初始化 SQLite 平台库和业务样例库。
-- 默认端口为 `7860`。
-- `hfs-dev.toml` 声明本仓库为 HFS Pattern A / self-contained / repo-root。
+- `cloud/hfs/` 是唯一的 Space wrapper 源；产品仓根目录不再作为 Space build context。
+- `scripts/export_hfs_space_bundle.py` 只导出 wrapper、无密 `hfs-dev.toml` 和生成的 `BUILD_SOURCE.json`；不会导出 `apps/`、`database/`、`docs/`、`local/`、`data/` 或 `.env*`。
+- 导出时必须提供完整不可变的 Git commit 与 Python base-image digest；Space Dockerfile checkout 后会校验 `HEAD` 与该 commit 一致。
+- wrapper 要求已有可写 `/data` Storage Bucket mount，SQLite、任务交接和生成的签名材料固定在 `/data/data-agent-platform`，不会回退到 `/tmp`。
 - Canonical 只读诊断入口为 `/_ops/healthz`，兼容 `/_ops/health`、`/healthz` 和 `/nginx-health`。
 - `/_ops/` 是 HFS 只读控制面，聚合 health、system、config、persistence、errors 和 metrics，不承载写操作。
 - `/_admin/` 是平台 Admin 控制面入口，复用应用登录和 RBAC；只有 `admin` 角色可读取 `/api/admin/*`。
