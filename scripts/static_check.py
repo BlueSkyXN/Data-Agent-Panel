@@ -279,7 +279,7 @@ def check_hfs_workflow() -> None:
         "git merge-base --is-ancestor",
         "export_hfs_space_bundle.py",
         "huggingface_hub==1.5.0",
-        "click==8.3.1",
+        "click==8.3.3",
         "python -m huggingface_hub.cli.hf version",
         "python -m huggingface_hub.cli.hf --help",
         "python -m huggingface_hub.cli.hf upload --help",
