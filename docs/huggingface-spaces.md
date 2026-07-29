@@ -63,6 +63,11 @@ Space 文件，因此仅能写入空 candidate 或已是 thin wrapper 的 Space�
 `--delete "*"` 或无条件 factory reboot。旧 full-repo Space tree 的清理、Space 选择、Settings
 push、restart、数据恢复和生产 cutover 必须经独立 owner 批准并在写后读回。
 
+Candidate 与 production profile 都要求目标 Space 已是 private。Production 还固定为
+`BlueSkyXN/Data-Agent-Panel-HFS`，并在 upload 紧前 fresh fetch `origin/main`，要求 workflow ref、
+checkout `HEAD`、`GITHUB_SHA`、`SOURCE_REF` 与 current main 完全一致；candidate 继续允许选择
+`origin/main` 可达的已审阅历史 commit。
+
 ## 6. 线上验收
 
 ```bash
