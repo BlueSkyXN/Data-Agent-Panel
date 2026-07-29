@@ -460,6 +460,7 @@ def main() -> int:
     check_hfs_workflow()
     check_exporter_contract()
     run([sys.executable, "scripts/check_hfs_alignment.py", "."])
+    run([sys.executable, "scripts/test_hf_space_sync.py"])
     check_python_compile()
     check_shell_scripts()
     check_hf_entrypoint_backup_contract()

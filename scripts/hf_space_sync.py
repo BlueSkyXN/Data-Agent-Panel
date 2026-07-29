@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -41,9 +42,8 @@ ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 TEXT_KEY_VALUE = re.compile(r"^\s*([A-Za-z0-9_.-]+)\s*[:=]\s*(.*?)\s*$")
 URL_VALUE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s\"']+")
-DSN_SECRET = re.compile(
-    r"(?:^|[\s;])(?:password|passwd|pwd|passphrase)\s*=\s*([^\s;]+)",
-    flags=re.IGNORECASE,
+DSN_FIELD = re.compile(
+    r"(?:^|[\s;])(?P<key>[A-Za-z][A-Za-z0-9_.-]*)\s*=\s*(?P<value>[^\s;]+)"
 )
 SENSITIVE_KEY_SUFFIXES = {
     "pass",
@@ -72,7 +72,7 @@ STRUCTURED_SEED_SUFFIXES = {".toml", ".json", ".yaml", ".yml"}
 TEXT_SEED_SUFFIXES = {"", ".cfg", ".conf", ".env", ".ini", ".properties", ".txt"}
 LITERAL_SECRET = re.compile(
     r"(hf_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,})"
+    r"|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})"
 )
 
 
@@ -241,15 +241,30 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         validate_object_path(manifest.get("mount_config_object", "config/config.toml"), "mount_config_object")
 
     secrets = set(string_list(manifest, "secrets"))
+    optional_secrets = set(string_list(manifest, "optional_secrets"))
     variables = set(string_list(manifest, "variables"))
     local_only = DEFAULT_LOCAL_ONLY | set(string_list(manifest, "local_only"))
     validate_setting_names(secrets, "secrets")
+    validate_setting_names(optional_secrets, "optional_secrets")
     validate_setting_names(variables, "variables")
     validate_setting_names(local_only, "local_only")
-    if secrets & variables:
-        raise SyncError(f"同一键不能同时登记为 secret 和 variable：{sorted(secrets & variables)}")
-    if (secrets | variables) & local_only:
-        raise SyncError(f"本地控制凭据不能推送到 Space：{sorted((secrets | variables) & local_only)}")
+    if secrets & optional_secrets:
+        raise SyncError(
+            "同一键不能同时登记为 required secret 和 optional secret："
+            f"{sorted(secrets & optional_secrets)}"
+        )
+    secret_variable_overlap = (secrets | optional_secrets) & variables
+    if secret_variable_overlap:
+        raise SyncError(
+            "同一键不能同时登记为 secret/optional secret 和 variable："
+            f"{sorted(secret_variable_overlap)}"
+        )
+    local_overlap = (secrets | optional_secrets | variables) & local_only
+    if local_overlap:
+        raise SyncError(
+            "本地控制凭据不能登记为 Space secret/optional secret/variable："
+            f"{sorted(local_overlap)}"
+        )
 
     seed_value = manifest.get("seed_file")
     other_objects = string_list(manifest, "other_objects")
@@ -271,10 +286,11 @@ def local_only_names(manifest: dict[str, Any]) -> set[str]:
     return DEFAULT_LOCAL_ONLY | set(string_list(manifest, "local_only"))
 
 
-def registered_names(manifest: dict[str, Any]) -> tuple[set[str], set[str]]:
+def registered_names(manifest: dict[str, Any]) -> tuple[set[str], set[str], set[str]]:
     secrets = set(string_list(manifest, "secrets"))
+    optional_secrets = set(string_list(manifest, "optional_secrets"))
     variables = set(string_list(manifest, "variables"))
-    return secrets, variables
+    return secrets, optional_secrets, variables
 
 
 def hf_token(env_values: dict[str, str]) -> str:
@@ -388,43 +404,57 @@ def embedded_credential(value: str) -> bool:
     for candidate in URL_VALUE.findall(value):
         candidate = candidate.rstrip(",);]")
         try:
-            password = urllib.parse.urlsplit(candidate).password
+            parsed = urllib.parse.urlsplit(candidate)
+            password = parsed.password
         except ValueError:
+            parsed = None
             password = None
         if password is not None and not placeholder_value(urllib.parse.unquote(password)):
             return True
-    for match in DSN_SECRET.finditer(value):
-        if not placeholder_value(match.group(1)):
+        if parsed is not None:
+            for key, query_value in urllib.parse.parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            ):
+                if normalized_sensitive_key(key) and not placeholder_value(query_value):
+                    return True
+    for match in DSN_FIELD.finditer(value):
+        if normalized_sensitive_key(match.group("key")) and not placeholder_value(
+            match.group("value")
+        ):
             return True
     return False
 
 
-def matching_secret_names(value: str, protected_values: dict[str, str]) -> list[str]:
-    matches: list[str] = []
-    for name, secret in protected_values.items():
+def matching_protected_names(
+    value: str,
+    protected_values: dict[str, tuple[str, str]],
+) -> list[tuple[str, str]]:
+    matches: list[tuple[str, str]] = []
+    for name, (category, secret) in protected_values.items():
         if value == secret or (len(secret) >= 8 and secret in value):
-            matches.append(name)
+            matches.append((category, name))
     return matches
 
 
 def scalar_sensitive_fields(
     value: Any,
     location: str,
-    protected_values: dict[str, str],
+    protected_values: dict[str, tuple[str, str]],
 ) -> list[str]:
     if not isinstance(value, str):
         return []
     findings: list[str] = []
     if embedded_credential(value):
         findings.append(f"{location}:embedded-credential")
-    for name in matching_secret_names(value, protected_values):
-        findings.append(f"{location}:env-secret:{name}")
+    for category, name in matching_protected_names(value, protected_values):
+        findings.append(f"{location}:{category}:{name}")
     return findings
 
 
 def structured_sensitive_fields(
     value: Any,
-    protected_values: dict[str, str],
+    protected_values: dict[str, tuple[str, str]],
     prefix: str = "",
 ) -> list[str]:
     findings: list[str] = []
@@ -473,7 +503,7 @@ def strip_unquoted_comment(line: str) -> str:
 
 def sensitive_seed_fields(
     path: Path,
-    protected_values: dict[str, str] | None = None,
+    protected_values: dict[str, tuple[str, str]] | None = None,
     *,
     strict_format: bool = False,
 ) -> list[str]:
@@ -537,13 +567,56 @@ def sensitive_seed_fields(
     return deduplicated(findings)
 
 
-def protected_secret_values(env_values: dict[str, str], secrets: set[str]) -> dict[str, str]:
-    names = secrets | DEFAULT_LOCAL_ONLY
-    return {
-        name: env_values[name]
-        for name in names
+def configured_optional_secrets(
+    env_values: dict[str, str], optional_secrets: set[str]
+) -> set[str]:
+    return {name for name in optional_secrets if env_values.get(name, "")}
+
+
+def protected_secret_values(
+    env_values: dict[str, str], manifest: dict[str, Any]
+) -> dict[str, tuple[str, str]]:
+    secrets, optional_secrets, _ = registered_names(manifest)
+    protected: dict[str, tuple[str, str]] = {}
+    for name in secrets | optional_secrets:
+        if env_values.get(name) and not placeholder_value(env_values[name]):
+            protected[name] = ("env-secret", env_values[name])
+    for name in local_only_names(manifest):
+        if env_values.get(name) and not placeholder_value(env_values[name]):
+            protected[name] = ("local-only", env_values[name])
+    return protected
+
+
+def unsafe_variable_reasons(
+    name: str,
+    value: str,
+    protected_values: dict[str, tuple[str, str]],
+) -> list[str]:
+    reasons: list[str] = []
+    if embedded_credential(value):
+        reasons.append(f"{name}:embedded-credential")
+    if LITERAL_SECRET.search(value):
+        reasons.append(f"{name}:literal-token-pattern")
+    for category, protected_name in matching_protected_names(value, protected_values):
+        reasons.append(f"{name}:{category}:{protected_name}")
+    return reasons
+
+
+def unsafe_local_only_aliases(
+    env_values: dict[str, str],
+    manifest: dict[str, Any],
+    setting_names: set[str],
+) -> list[str]:
+    protected_values = {
+        name: ("local-only", env_values[name])
+        for name in local_only_names(manifest)
         if env_values.get(name) and not placeholder_value(env_values[name])
     }
+    findings: list[str] = []
+    for name in sorted(setting_names):
+        for _, protected_name in matching_protected_names(env_values[name], protected_values):
+            findings.append(f"{name}:local-only:{protected_name}")
+    return findings
 
 
 def report(title: str, items: list[str]) -> int:
@@ -559,23 +632,55 @@ def preflight(
     env_file: Path = Path(".env"),
     *,
     for_push: bool = False,
-) -> tuple[dict[str, Any], dict[str, str], str, set[str], set[str], Path | None]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, str],
+    str,
+    set[str],
+    set[str],
+    set[str],
+    Path | None,
+]:
     root = root.resolve()
     manifest = load_manifest(root, manifest_file)
     validate_manifest(manifest)
     validate_env_file_selection(manifest, env_file)
     env_values = load_env(root, env_file)
     token = hf_token(env_values)
-    secrets, variables = registered_names(manifest)
+    secrets, optional_secrets, variables = registered_names(manifest)
     missing = sorted(name for name in secrets | variables if not env_values.get(name, ""))
     if missing:
         raise SyncError(f"env 文件缺少已登记值，未执行任何写操作：{missing}")
+    present_optional_secrets = configured_optional_secrets(env_values, optional_secrets)
     placeholder_settings = sorted(
-        name for name in secrets | variables if placeholder_value(env_values[name])
+        name
+        for name in secrets | variables | present_optional_secrets
+        if placeholder_value(env_values[name])
     )
     if placeholder_settings:
         raise SyncError(
             f"env 文件中的 Secret/Variable 仍是占位符，未执行任何写操作：{placeholder_settings}"
+        )
+    protected_values = protected_secret_values(env_values, manifest)
+    variable_findings: list[str] = []
+    for name in sorted(variables):
+        variable_findings.extend(
+            unsafe_variable_reasons(name, env_values[name], protected_values)
+        )
+    if variable_findings:
+        raise SyncError(
+            "Space Variable 值疑似含凭据，未执行任何写操作；"
+            f"仅列出键名和原因：{deduplicated(variable_findings)}"
+        )
+    local_only_aliases = unsafe_local_only_aliases(
+        env_values,
+        manifest,
+        secrets | present_optional_secrets,
+    )
+    if local_only_aliases:
+        raise SyncError(
+            "Space Secret 值与本地控制凭据重合，未执行任何写操作；"
+            f"仅列出键名和来源：{local_only_aliases}"
         )
     local_seed = seed_path(root, manifest)
     if local_seed is not None and not local_seed.is_file():
@@ -583,12 +688,20 @@ def preflight(
     if for_push and local_seed is not None:
         sensitive = sensitive_seed_fields(
             local_seed,
-            protected_secret_values(env_values, secrets),
+            protected_values,
             strict_format=True,
         )
         if sensitive:
             raise SyncError(f"种子疑似包含实际 secret，禁止上传；字段位置：{sensitive}")
-    return manifest, env_values, token, secrets, variables, local_seed
+    return (
+        manifest,
+        env_values,
+        token,
+        secrets,
+        optional_secrets,
+        variables,
+        local_seed,
+    )
 
 
 def resolve_targets(api: HfApi, manifest: dict[str, Any], token: str) -> tuple[str, str]:
@@ -609,22 +722,35 @@ def cmd_diff(
     env_file: Path = Path(".env"),
 ) -> int:
     root = root.resolve()
-    manifest, env_values, token, secrets, variables, local_seed = preflight(
-        root, manifest_file, env_file
-    )
+    (
+        manifest,
+        env_values,
+        token,
+        secrets,
+        optional_secrets,
+        variables,
+        local_seed,
+    ) = preflight(root, manifest_file, env_file)
     api = api_client(token)
     space, storage_owner = resolve_targets(api, manifest, token)
     api.space_info(space, token=token)
 
     differences = 0
-    registered = secrets | variables
+    present_optional_secrets = configured_optional_secrets(env_values, optional_secrets)
+    declared_secrets = secrets | optional_secrets
+    expected_secrets = secrets | present_optional_secrets
+    registered = declared_secrets | variables
     deployable_env = set(env_values) - local_only_names(manifest)
     differences += report("env 有但未登记", sorted(deployable_env - registered))
 
     remote_secrets = space_secret_names(space, token)
     remote_variables = api.get_space_variables(space, token=token)
-    differences += report("远端多出 secret", sorted(remote_secrets - secrets))
-    differences += report("远端缺 secret", sorted(secrets - remote_secrets))
+    differences += report("远端多出 secret", sorted(remote_secrets - declared_secrets))
+    differences += report(
+        "远端 optional secret 缺少本地明文值",
+        sorted((optional_secrets - present_optional_secrets) & remote_secrets),
+    )
+    differences += report("远端缺 secret", sorted(expected_secrets - remote_secrets))
     differences += report("远端多出 variable", sorted(set(remote_variables) - variables))
     differences += report("远端缺 variable", sorted(variables - set(remote_variables)))
     differences += report(
@@ -646,7 +772,7 @@ def cmd_diff(
         else:
             sensitive = sensitive_seed_fields(
                 local_seed,
-                protected_secret_values(env_values, secrets),
+                protected_secret_values(env_values, manifest),
             )
             differences += report("种子疑似含实际 secret", sensitive)
 
@@ -710,14 +836,30 @@ def cmd_push(
     root = root.resolve()
     if prune and not yes:
         raise SyncError("--prune 会删除远端设置，必须同时传 --yes")
-    manifest, env_values, token, secrets, variables, local_seed = preflight(
-        root, manifest_file, env_file, for_push=True
-    )
+    (
+        manifest,
+        env_values,
+        token,
+        secrets,
+        optional_secrets,
+        variables,
+        local_seed,
+    ) = preflight(root, manifest_file, env_file, for_push=True)
     api = api_client(token)
     space, storage_owner = resolve_targets(api, manifest, token)
     api.space_info(space, token=token)
 
-    for name in sorted(secrets):
+    present_optional_secrets = configured_optional_secrets(env_values, optional_secrets)
+    pushed_secrets = secrets | present_optional_secrets
+    if not prune:
+        remote_without_local_values = space_secret_names(space, token) - pushed_secrets
+        if remote_without_local_values:
+            raise SyncError(
+                "远端 Secret 缺少本地明文值，未执行任何写操作；"
+                "请先补入 manifest/env，或显式使用 --prune --yes 删除；"
+                f"仅列出键名：{sorted(remote_without_local_values)}"
+            )
+    for name in sorted(pushed_secrets):
         api.add_space_secret(space, name, env_values[name], token=token)
         print(f"secret 已推送：{name}")
     for name in sorted(variables):
@@ -737,7 +879,7 @@ def cmd_push(
     if prune:
         remote_secrets = space_secret_names(space, token)
         remote_variables = api.get_space_variables(space, token=token)
-        for name in sorted(remote_secrets - secrets):
+        for name in sorted(remote_secrets - pushed_secrets):
             api.delete_space_secret(space, name, token=token)
             print(f"secret 已删除：{name}")
         for name in sorted(set(remote_variables) - variables):
@@ -746,40 +888,156 @@ def cmd_push(
 
     remote_secrets = space_secret_names(space, token)
     remote_variables = api.get_space_variables(space, token=token)
-    missing_names = (secrets - remote_secrets) | (variables - set(remote_variables))
+    missing_names = (pushed_secrets - remote_secrets) | (variables - set(remote_variables))
     value_drift = {
         name
         for name in variables & set(remote_variables)
         if remote_variables[name].value != env_values[name]
     }
-    extras = set()
+    secret_extras = remote_secrets - pushed_secrets
+    variable_extras = set()
     if prune:
-        extras = (remote_secrets - secrets) | (set(remote_variables) - variables)
-    if missing_names or value_drift or extras:
+        variable_extras = set(remote_variables) - variables
+    if missing_names or value_drift or secret_extras or variable_extras:
         raise SyncError(
             "读回校验失败："
             f"缺少名称 {sorted(missing_names)}；"
             f"variable 值不一致 {sorted(value_drift)}；"
-            f"prune 后多余项 {sorted(extras)}"
+            f"无本地明文值的 secret {sorted(secret_extras)}；"
+            f"prune 后多余 variable {sorted(variable_extras)}"
         )
     print("读回校验通过（secret 比名称，variable 比值，种子比内容）")
     return 0
 
 
+def ensure_contained(root: Path, path: Path) -> None:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise SyncError(f"pull 目录不能逃逸项目根：{path.name}") from exc
+
+
+def directory_open_flags() -> int:
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    return flags
+
+
+def validate_open_directory(root: Path, path: Path, descriptor: int) -> None:
+    try:
+        path_mode = path.lstat().st_mode
+        path_stat = path.stat(follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise SyncError(f"pull 路径组件在校验期间消失：{path.name}") from exc
+    if stat.S_ISLNK(path_mode):
+        raise SyncError(f"pull 路径组件不能是符号链接：{path.name}")
+    if not stat.S_ISDIR(path_mode):
+        raise SyncError(f"pull 路径组件必须是目录：{path.name}")
+    descriptor_stat = os.fstat(descriptor)
+    if not stat.S_ISDIR(descriptor_stat.st_mode):
+        raise SyncError(f"pull 路径组件必须是目录：{path.name}")
+    if (path_stat.st_dev, path_stat.st_ino) != (
+        descriptor_stat.st_dev,
+        descriptor_stat.st_ino,
+    ):
+        raise SyncError(f"pull 路径组件在校验期间被替换：{path.name}")
+    ensure_contained(root, path)
+    os.fchmod(descriptor, 0o700)
+
+
+def open_private_directory(root: Path, path: Path) -> int:
+    try:
+        descriptor = os.open(path, directory_open_flags())
+    except OSError as exc:
+        raise SyncError(f"pull 路径组件无法安全打开为目录：{path.name}") from exc
+    try:
+        validate_open_directory(root, path, descriptor)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def ensure_private_directory(root: Path, path: Path) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        ensure_contained(root, path)
+        try:
+            path.mkdir(mode=0o700, parents=False, exist_ok=False)
+        except FileExistsError:
+            pass
+        mode = path.lstat().st_mode
+    if stat.S_ISLNK(mode):
+        raise SyncError(f"pull 路径组件不能是符号链接：{path.name}")
+    if not stat.S_ISDIR(mode):
+        raise SyncError(f"pull 路径组件必须是目录：{path.name}")
+
+    descriptor = open_private_directory(root, path)
+    try:
+        validate_open_directory(root, path, descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def unique_pull_dir(root: Path, space: str) -> Path:
-    archive_root = root / "local" / "hfs-sync-pulled"
-    archive_root.mkdir(parents=True, exist_ok=True)
-    archive_root.chmod(0o700)
-    base = archive_root / space.split("/", 1)[-1]
-    base.mkdir(parents=False, exist_ok=True)
-    base.chmod(0o700)
+    root = root.resolve()
+    if not root.is_dir():
+        raise SyncError(f"项目根必须是目录：{root}")
+    space_slug = validate_slug(space.split("/", 1)[-1], "Space slug")
+    local_root = root / "local"
+    archive_root = local_root / "hfs-sync-pulled"
+    base = archive_root / space_slug
+    for path in (local_root, archive_root, base):
+        ensure_private_directory(root, path)
     timestamp = time.strftime("%Y%m%d%H%M%S")
-    candidate = base / timestamp
-    if candidate.exists():
-        candidate = base / f"{timestamp}-{time.time_ns()}"
-    candidate.mkdir(mode=0o700, parents=False, exist_ok=False)
-    candidate.chmod(0o700)
-    return candidate
+    base_descriptor = open_private_directory(root, base)
+    try:
+        for attempt in range(256):
+            name = timestamp if attempt == 0 else f"{timestamp}-{time.time_ns()}-{attempt - 1}"
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=base_descriptor)
+            except FileExistsError:
+                try:
+                    existing_mode = os.stat(
+                        name,
+                        dir_fd=base_descriptor,
+                        follow_symlinks=False,
+                    ).st_mode
+                except OSError as exc:
+                    raise SyncError(f"pull 唯一目录碰撞后无法安全检查：{name}") from exc
+                if stat.S_ISLNK(existing_mode):
+                    raise SyncError(f"pull 路径组件不能是符号链接：{name}")
+                if not stat.S_ISDIR(existing_mode):
+                    raise SyncError(f"pull 路径组件必须是目录：{name}")
+                continue
+            except OSError as exc:
+                raise SyncError(f"无法创建私有 pull 目录：{name}") from exc
+
+            candidate = base / name
+            try:
+                candidate_descriptor = os.open(
+                    name,
+                    directory_open_flags(),
+                    dir_fd=base_descriptor,
+                )
+            except OSError as exc:
+                raise SyncError(f"新建 pull 目录无法安全打开：{name}") from exc
+            try:
+                validate_open_directory(root, candidate, candidate_descriptor)
+            except Exception:
+                try:
+                    os.rmdir(name, dir_fd=base_descriptor)
+                except OSError:
+                    pass
+                raise
+            finally:
+                os.close(candidate_descriptor)
+            return candidate
+    finally:
+        os.close(base_descriptor)
+    raise SyncError("无法创建唯一的 pull 目录")
 
 
 def cmd_pull(
@@ -814,10 +1072,9 @@ def cmd_pull(
         raise SyncError(f"实例配置回收结果不是普通文件：{runtime_uri}")
     downloaded.chmod(0o600)
 
-    secrets, _ = registered_names(manifest)
     sensitive = sensitive_seed_fields(
         downloaded,
-        protected_secret_values(env_values, secrets),
+        protected_secret_values(env_values, manifest),
     )
     relative = downloaded.relative_to(root)
     print(f"实例配置已回收：{relative}（来源 {runtime_uri}）")
