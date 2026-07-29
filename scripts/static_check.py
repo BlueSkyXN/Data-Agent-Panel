@@ -56,6 +56,9 @@ EXPECTED_VARIABLES = {
     "DAP_SQLITE_INIT_LOCK_TIMEOUT_SECONDS",
     "PORT",
 }
+EXPECTED_DEVIATIONS = [
+    "business-image = PYTHON_BASE_IMAGE is a generated Dockerfile placeholder resolved from the reviewed immutable base-image input during wrapper export"
+]
 
 
 def run(cmd: list[str], *, check: bool = True, capture: bool = False) -> subprocess.CompletedProcess[str]:
@@ -171,7 +174,7 @@ def require_exact_key_set(manifest: dict[str, object], key: str, expected: set[s
 
 def check_hfs_manifest() -> None:
     manifest = tomllib.loads((ROOT / "hfs-dev.toml").read_text(encoding="utf-8"))
-    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables"}
+    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables", "deviations"}
     if set(manifest) != allowed_keys:
         raise SystemExit(
             "hfs-dev.toml must remain a minimal semantic registry; unexpected keys: "
@@ -183,6 +186,8 @@ def check_hfs_manifest() -> None:
     require_exact_key_set(manifest, "local_only", EXPECTED_LOCAL_ONLY)
     require_exact_key_set(manifest, "secrets", EXPECTED_SECRETS)
     require_exact_key_set(manifest, "variables", EXPECTED_VARIABLES)
+    if manifest.get("deviations") != EXPECTED_DEVIATIONS:
+        raise SystemExit("hfs-dev.toml deviations must document only the reviewed base-image placeholder")
     if set(manifest["local_only"]) & (set(manifest["secrets"]) | set(manifest["variables"])):
         raise SystemExit("local-only control credentials must not be registered as Space settings")
     if set(manifest["secrets"]) & set(manifest["variables"]):
@@ -273,10 +278,16 @@ def check_hfs_workflow() -> None:
         "git cat-file -e",
         "git merge-base --is-ancestor",
         "export_hfs_space_bundle.py",
-        "huggingface_hub[cli]==1.24.0",
+        "huggingface_hub==1.5.0",
+        "click==8.3.3",
+        "python -m huggingface_hub.cli.hf version",
+        "python -m huggingface_hub.cli.hf --help",
+        "python -m huggingface_hub.cli.hf upload --help",
+        "python -m huggingface_hub.cli.hf download --help",
         "list_repo_files",
         "ALLOWED_SPACE_FILES",
-        "hf upload",
+        "python -m huggingface_hub.cli.hf upload",
+        "python -m huggingface_hub.cli.hf download",
         "BUILD_SOURCE.json",
         "cmp ",
         "candidate Space must be private",

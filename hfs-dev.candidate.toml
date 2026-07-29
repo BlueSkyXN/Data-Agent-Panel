@@ -27,3 +27,7 @@ variables = [
   "DAP_SQLITE_INIT_LOCK_TIMEOUT_SECONDS",
   "PORT",
 ]
+
+deviations = [
+  "business-image = PYTHON_BASE_IMAGE is a generated Dockerfile placeholder resolved from the reviewed immutable base-image input during wrapper export",
+]
