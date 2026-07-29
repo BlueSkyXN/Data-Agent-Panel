@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-HFS v2 将 Data Agent Panel 的 Space 边界改为 Pattern B thin source wrapper：
+HFS v2.1 将 Data Agent Panel 的 Preview Space 边界定义为 Pattern B thin source wrapper：
 
 ```text
 exported wrapper
@@ -59,9 +59,8 @@ wrapper 会在 `/data` 缺失、不可写，或 `DAP_DATA_DIR`、数据库、任
 导出使用完整 commit 和 base digest；destination 必须为空，工具不会覆盖既有目录。wrapper 输入必须
 已提交且与 `--wrapper-ref` 一致，否则 exporter 拒绝生成会误报 provenance 的 bundle。手动触发的
 GitHub workflow 会先执行静态检查和 bundle verifier，并在上传前和写后读回时拒绝 allowlist 外的
-Space 文件，因此仅能写入空 candidate 或已是 thin wrapper 的 Space。workflow 不使用全仓上传、
-`--delete "*"` 或无条件 factory reboot。旧 full-repo Space tree 的清理、Space 选择、Settings
-push、restart、数据恢复和生产 cutover 必须经独立 owner 批准并在写后读回。
+Space 文件，因此仅能写入已是 thin wrapper 的 canonical preview Space，或按需使用的空 candidate。workflow 不使用全仓上传、
+`--delete "*"` 或无条件 factory reboot。Preview 可直接修改 canonical Space，但 Secret 必须先写入本地明文 `.env`，并在写后完成 readback；candidate 不作为常规前置。
 
 ## 6. 线上验收
 

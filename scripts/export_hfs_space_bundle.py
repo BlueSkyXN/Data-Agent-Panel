@@ -220,7 +220,7 @@ def main() -> int:
         "--manifest",
         required=True,
         type=Path,
-        help="explicit production or candidate HFS manifest",
+        help="explicit canonical-preview or optional candidate HFS manifest",
     )
     parser.add_argument(
         "--require-origin-main",

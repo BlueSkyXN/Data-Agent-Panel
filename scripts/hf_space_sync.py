@@ -31,7 +31,7 @@ from huggingface_hub import HfApi
 from huggingface_hub.utils import build_hf_headers, validate_repo_id
 
 
-STANDARD = "2.0"
+STANDARD = "2.1"
 DEFAULT_DIST_BUCKET = "hfs-dist"
 DEFAULT_LOCAL_ONLY = {"HF_TOKEN", "GH_TOKEN"}
 SOVEREIGNTIES = {"sovereign", "fork", "port"}
@@ -202,6 +202,19 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise SyncError(f'standard 必须为 "{STANDARD}"')
     validate_slug(manifest.get("project"), "project")
 
+    if manifest.get("project_class") != "preview":
+        raise SyncError('project_class 必须为 "preview"')
+    target_role = manifest.get("target_role")
+    if target_role not in {"primary", "candidate", "restore", "rotation"}:
+        raise SyncError("target_role 必须是 primary、candidate、restore 或 rotation")
+    expected_env_file = (
+        ".env" if target_role == "primary" else f"local/hfs-targets/{target_role}.env"
+    )
+    if manifest.get("env_file") != expected_env_file:
+        raise SyncError(f"env_file 必须为 {expected_env_file!r}")
+    if manifest.get("secret_files") != []:
+        raise SyncError("secret_files 当前必须为空列表")
+
     space = manifest.get("space")
     if not isinstance(space, str) or not space:
         raise SyncError("space 必须是非空字符串")
@@ -246,6 +259,12 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             raise SyncError("seed_file 的文件名必须登记在 other_objects")
     for item in other_objects:
         validate_object_path(item, "other_objects")
+
+
+def validate_env_file_selection(manifest: dict[str, Any], env_file: Path) -> None:
+    declared = Path(str(manifest["env_file"]))
+    if env_file != declared:
+        raise SyncError(f"--env-file 必须与 manifest env_file 一致：{declared}")
 
 
 def local_only_names(manifest: dict[str, Any]) -> set[str]:
@@ -544,6 +563,7 @@ def preflight(
     root = root.resolve()
     manifest = load_manifest(root, manifest_file)
     validate_manifest(manifest)
+    validate_env_file_selection(manifest, env_file)
     env_values = load_env(root, env_file)
     token = hf_token(env_values)
     secrets, variables = registered_names(manifest)
@@ -770,6 +790,7 @@ def cmd_pull(
     root = root.resolve()
     manifest = load_manifest(root, manifest_file)
     validate_manifest(manifest)
+    validate_env_file_selection(manifest, env_file)
     env_values = load_env(root, env_file)
     token = hf_token(env_values)
     api = api_client(token)

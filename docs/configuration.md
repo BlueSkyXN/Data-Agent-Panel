@@ -2,7 +2,7 @@
 
 ## 配置来源优先级
 
-运行配置来自环境变量，统一使用 `DAP_` 前缀。仓库内只提交 `.env.example` 作为字段说明；真实值放在本机 `.env.local`、GitHub Secrets 或 Hugging Face Space Variables/Secrets 中。
+运行配置来自环境变量，统一使用 `DAP_` 前缀。仓库内只提交 `.env.example` 作为字段说明；HFS 的真实值先保存在本机明文 `.env`，再按分类写入 Hugging Face Space Variables/Secrets。`.env.local` 仅保留产品本地运行兼容。
 
 ```text
 runtime env / Space Settings
@@ -61,4 +61,4 @@ DAP_OPS_TOKEN=<strong random read-only ops token>
 
 ## 本地账本
 
-本仓库根目录的 `.env.local` 是本机账本，已由 `.gitignore` 和全局 ignore 排除。它可以记录当前 GitHub/HF 部署目标和本机 smoke 所需 token，但不作为公开文档或构建输入。
+本仓库根目录的 `.env` 是 HFS 唯一的本机明文事实源，已由 `.gitignore` 排除。任何 Secret 都必须先在这里保存，再写入无法反向读回值的 Space Secret。`.env.local` 可以继续承载产品本地运行兼容，但不能成为第二份 HFS 事实源。candidate profile 使用独立的 `local/hfs-targets/candidate.env`。

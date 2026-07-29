@@ -27,12 +27,16 @@ WRAPPER_INPUTS = ("cloud/hfs", "hfs-dev.toml", "hfs-dev.candidate.toml", "script
 EXPECTED_BUNDLE_FILES = {".dockerignore", "BUILD_SOURCE.json", "Dockerfile", "README.md", "entrypoint.sh", "hfs-dev.toml"}
 ALLOWED_SPACE_FILES = EXPECTED_BUNDLE_FILES | {".gitattributes"}
 EXPECTED_MANIFEST = {
-    "standard": "2.0",
+    "standard": "2.1",
     "project": "data-agent-panel",
     "space": "BlueSkyXN/Data-Agent-Panel-HFS",
     "sovereignty": "sovereign",
     "lane": "source",
     "version_source": "commit",
+    "project_class": "preview",
+    "target_role": "primary",
+    "env_file": ".env",
+    "secret_files": [],
 }
 EXPECTED_LOCAL_ONLY = {"HF_TOKEN", "GH_TOKEN"}
 EXPECTED_SECRETS = {
@@ -188,11 +192,20 @@ def check_hfs_manifest() -> None:
     if set(manifest["secrets"]) & set(manifest["variables"]):
         raise SystemExit("Space Secret and Variable names must not overlap")
     candidate = tomllib.loads((ROOT / "hfs-dev.candidate.toml").read_text(encoding="utf-8"))
-    if candidate.get("space") != "BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate":
-        raise SystemExit("candidate manifest must select BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate")
+    candidate_expected = {
+        "space": "BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate",
+        "target_role": "candidate",
+        "env_file": "local/hfs-targets/candidate.env",
+    }
+    for key, value in candidate_expected.items():
+        if candidate.get(key) != value:
+            raise SystemExit(f"candidate manifest {key} must be {value!r}")
     for key in sorted(set(manifest) | set(candidate)):
-        if key != "space" and manifest.get(key) != candidate.get(key):
-            raise SystemExit(f"candidate manifest differs from production at {key}")
+        if (
+            key not in {"space", "target_role", "env_file"}
+            and manifest.get(key) != candidate.get(key)
+        ):
+            raise SystemExit(f"candidate manifest differs from canonical preview at {key}")
 
 
 def check_wrapper_contract() -> None:

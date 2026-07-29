@@ -17,12 +17,16 @@ IMAGE = re.compile(r"^[A-Za-z0-9._/:+-]+@sha256:[0-9a-f]{64}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SOURCE_REPOSITORY = "https://github.com/BlueSkyXN/Data-Agent-Panel.git"
 EXPECTED_MANIFEST = {
-    "standard": "2.0",
+    "standard": "2.1",
     "project": "data-agent-panel",
     "space": "BlueSkyXN/Data-Agent-Panel-HFS",
     "sovereignty": "sovereign",
     "lane": "source",
     "version_source": "commit",
+    "project_class": "preview",
+    "target_role": "primary",
+    "env_file": ".env",
+    "secret_files": [],
 }
 EXPECTED_BUNDLE_FILES = {".dockerignore", "BUILD_SOURCE.json", "Dockerfile", "README.md", "entrypoint.sh", "hfs-dev.toml"}
 FORBIDDEN_BUNDLE_PATHS = {".env", ".env.local", "apps", "data", "database", "docs", "local", "logs", "scripts"}

@@ -9,7 +9,7 @@ on:
         type: choice
         options:
           - candidate
-          - production
+          - primary
       source_ref:
         description: Approved full 40-character product commit SHA
         required: true

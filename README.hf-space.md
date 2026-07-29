@@ -1,6 +1,6 @@
 # Hugging Face Space 部署说明
 
-Data Agent Panel 使用 HFS v2 **Pattern B / source lane**。`cloud/hfs/` 是唯一
+Data Agent Panel 使用 HFS v2.1 **Preview / Pattern B / source lane**。`cloud/hfs/` 是唯一
 可导出的 Space wrapper；产品仓根目录、应用源码、数据库 schema、文档、`local/`、
 运行数据与 `.env*` 都不会上传到 Space。
 
@@ -14,7 +14,7 @@ commit 与 Python base-image digest。缺少其中任一不可变输入时，导
 - wrapper、最小 manifest 与 exporter 必须已提交并与 `--wrapper-ref` 完全一致；exporter 会拒绝未提交或未跟踪的 wrapper 输入，避免伪造 provenance。
 - 选择已审批的 Python base image digest，例如
   `python:3.11-slim@sha256:<64-hex-digest>`；不能使用浮动 tag。
-- candidate 或目标 Space 必须已有可写的 `/data` Storage Bucket mount。
+- canonical preview Space 必须已有可写的 `/data` Storage Bucket mount；candidate 仅是高风险可选验证。
 - 先完成数据 owner 批准的 SQLite backup、verify 与隔离恢复；本仓的 wrapper 不执行这些
   状态操作。
 
@@ -26,14 +26,14 @@ python3 scripts/export_hfs_space_bundle.py \
   --source-ref <approved-40-character-product-commit> \
   --wrapper-ref <approved-40-character-wrapper-commit> \
   --base-image python:3.11-slim@sha256:<approved-64-hex-digest> \
-  --manifest hfs-dev.candidate.toml
+  --manifest hfs-dev.toml
 ```
 
 导出的 bundle 仅包含：`README.md`、`Dockerfile`、`entrypoint.sh`、`.dockerignore`、
 `hfs-dev.toml` 和 `BUILD_SOURCE.json`。检查 `BUILD_SOURCE.json` 后，才可由人工触发的
 GitHub workflow 上传。workflow 会在上传前和读回时拒绝包含 allowlist 外文件的 Space tree，
-因此只能用于空 candidate 或已是 thin wrapper 的 Space；默认流程不使用 `--delete "*"`、不
-factory reboot，也不删除旧 Space 文件。清理旧 full-repo 内容、切换生产 Space 或重启均须独立
+因此只能用于已是 thin wrapper 的 canonical preview Space，或按需使用的空 candidate；默认流程不使用 `--delete "*"`、不
+factory reboot，也不删除旧 Space 文件。清理旧 full-repo 内容或重启均须独立
 owner 批准与读回。
 
 ## Space Settings 分类
@@ -72,14 +72,15 @@ PORT
 `DAP_DB_PATH`、`DAP_BUSINESS_DB_PATH`、`DAP_CODEX_TASK_DIR` 是本地部署控制项，wrapper
 会将它们约束在 `/data/data-agent-platform`，不应将其作为普通 Space Variable 分发。
 
-Settings 必须从本地 `.env` 事实源执行 `diff → push → readback`。candidate 与 production
-分别选择独立 manifest，不允许临时覆盖 Space ID：
+Settings 必须从本地明文 `.env` 事实源执行 `diff → push → readback`。Preview 日常变更可直接更新 canonical Space；Secret 必须本地先行，因为远端值无法读回：
 
 ```bash
-python3 scripts/hf_space_sync.py diff --manifest hfs-dev.candidate.toml --env-file .env
-python3 scripts/hf_space_sync.py push --manifest hfs-dev.candidate.toml --env-file .env
-python3 scripts/hf_space_sync.py diff --manifest hfs-dev.candidate.toml --env-file .env
+python3 scripts/hf_space_sync.py diff --manifest hfs-dev.toml --env-file .env
+python3 scripts/hf_space_sync.py push --manifest hfs-dev.toml --env-file .env
+python3 scripts/hf_space_sync.py diff --manifest hfs-dev.toml --env-file .env
 ```
+
+`hfs-dev.candidate.toml` 使用独立账本 `local/hfs-targets/candidate.env`，只在高风险验证需要时显式选择，不是 Preview 常规前置。
 
 Secret 仅核对名称，Variable 核对值；清理窗口获批前不得使用 `--prune --yes`。
 
