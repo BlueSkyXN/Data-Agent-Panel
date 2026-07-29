@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import shutil
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from .auth_utils import hash_secret
+from .auth_utils import hash_secret, verify_secret
 from .config import ROOT, get_settings
 
 try:
@@ -852,28 +853,75 @@ def _demo_seed_enabled() -> bool:
     return settings.demo_mode and settings.allow_demo_seed
 
 
-def _admin_user_exists() -> bool:
+def _user_is_active_admin(user_id: str) -> bool:
     row = one(
         """
         SELECT u.id
         FROM users u
         JOIN user_roles ur ON ur.user_id=u.id
         JOIN roles r ON r.id=ur.role_id
-        WHERE r.name='admin' AND u.status='active'
+        WHERE u.id=? AND r.name='admin' AND u.status='active'
         LIMIT 1
-        """
+        """,
+        [user_id],
     )
     return row is not None
 
 
-def _seed_bootstrap_admin() -> None:
-    password = settings.bootstrap_admin_password
-    if not password or _admin_user_exists():
+def _uses_default_demo_password(user: dict[str, Any]) -> bool:
+    legacy_password = user.get("password") or ""
+    return verify_secret("admin123", user.get("password_hash")) or hmac.compare_digest(legacy_password, "admin123")
+
+
+def _disable_default_demo_admin(bootstrap_user_id: str) -> None:
+    user = one("SELECT * FROM users WHERE id='u_admin' AND username='admin'")
+    if not user or user["id"] == bootstrap_user_id or not _uses_default_demo_password(user):
         return
+    update(
+        "users",
+        "id",
+        user["id"],
+        {
+            "password": "",
+            "password_hash": hash_secret(new_id("disabled_demo_admin")),
+            "status": "disabled",
+            "failed_login_count": 0,
+            "locked_until": None,
+        },
+    )
+    insert(
+        "audit_logs",
+        {
+            "id": new_id("audit"),
+            "user_id": bootstrap_user_id,
+            "action": "default_demo_admin_disabled",
+            "object_type": "user",
+            "object_id": user["id"],
+            "detail_json": {"username": "admin", "source": "env_bootstrap"},
+            "ip": "",
+            "request_id": "",
+            "created_at": now(),
+        },
+    )
+
+
+def _seed_bootstrap_admin() -> str | None:
+    password = settings.bootstrap_admin_password
+    if not password:
+        return None
     username = settings.bootstrap_admin_username or "admin"
     t = now()
     user = one("SELECT * FROM users WHERE username=?", [username])
-    if user:
+    action: str | None = None
+    has_default_demo_credentials = bool(
+        user
+        and user["id"] == "u_admin"
+        and user["username"] == "admin"
+        and _uses_default_demo_password(user)
+    )
+    if user and (_user_is_active_admin(user["id"]) and not has_default_demo_credentials):
+        user_id = user["id"]
+    elif user:
         user_id = user["id"]
         update(
             "users",
@@ -912,29 +960,37 @@ def _seed_bootstrap_admin() -> None:
         )
         action = "bootstrap_admin_created"
     insert_ignore("user_roles", {"user_id": user_id, "role_id": "r_admin"})
-    insert(
-        "audit_logs",
-        {
-            "id": new_id("audit"),
-            "user_id": user_id,
-            "action": action,
-            "object_type": "user",
-            "object_id": user_id,
-            "detail_json": {"username": username, "source": "env_bootstrap"},
-            "ip": "",
-            "request_id": "",
-            "created_at": t,
-        },
-    )
+    if action:
+        insert(
+            "audit_logs",
+            {
+                "id": new_id("audit"),
+                "user_id": user_id,
+                "action": action,
+                "object_type": "user",
+                "object_id": user_id,
+                "detail_json": {"username": username, "source": "env_bootstrap"},
+                "ip": "",
+                "request_id": "",
+                "created_at": t,
+            },
+        )
+    _disable_default_demo_admin(user_id)
+    return user_id
 
 
 def seed_platform() -> None:
     t = now()
-    _seed_demo_user("u_admin", {"id": "u_admin", "username": "admin", "password": "", "password_hash": hash_secret("admin123"), "name": "平台管理员", "email": "admin@example.com", "department": "Data Agent", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
+    bootstrap_configured = bool(settings.bootstrap_admin_password)
+    if not bootstrap_configured:
+        _seed_demo_user("u_admin", {"id": "u_admin", "username": "admin", "password": "", "password_hash": hash_secret("admin123"), "name": "平台管理员", "email": "admin@example.com", "department": "Data Agent", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
     _seed_demo_user("u_user", {"id": "u_user", "username": "user", "password": "", "password_hash": hash_secret("user123"), "name": "业务用户", "email": "user@example.com", "department": "业务分析", "status": "active", "failed_login_count": 0, "locked_until": None, "last_login_at": None, "created_at": t})
     for rid, name, desc in [("r_admin", "admin", "平台管理员"), ("r_business", "business_user", "业务分析用户")]:
         _upsert_by_id("roles", rid, {"id": rid, "name": name, "description": desc})
-    for uid, rid in [("u_admin", "r_admin"), ("u_user", "r_business")]:
+    demo_roles = [("u_user", "r_business")]
+    if not bootstrap_configured:
+        demo_roles.append(("u_admin", "r_admin"))
+    for uid, rid in demo_roles:
         if one("SELECT id FROM users WHERE id=?", [uid]):
             insert_ignore("user_roles", {"user_id": uid, "role_id": rid})
 
@@ -957,13 +1013,14 @@ def seed_platform() -> None:
     for pid in ["perm_agent_use", "perm_data_read"]:
         insert_ignore("role_permissions", {"role_id": "r_business", "permission_id": pid})
 
-    _seed_bootstrap_admin()
+    bootstrap_admin_id = _seed_bootstrap_admin()
 
     if not _demo_seed_enabled():
         return
 
-    _upsert_by_id("project_spaces", "space_demo", {"id": "space_demo", "name": "独立数据智能体演示空间", "owner_id": "u_admin", "description": "面向销售、客户服务、营销和经营分析的独立演示空间", "status": "active", "created_at": t, "updated_at": t})
-    for uid, role in [("u_admin", "owner"), ("u_user", "member")]:
+    demo_owner_id = bootstrap_admin_id or "u_admin"
+    _upsert_by_id("project_spaces", "space_demo", {"id": "space_demo", "name": "独立数据智能体演示空间", "owner_id": demo_owner_id, "description": "面向销售、客户服务、营销和经营分析的独立演示空间", "status": "active", "created_at": t, "updated_at": t})
+    for uid, role in [(demo_owner_id, "owner"), ("u_user", "member")]:
         insert_ignore("space_members", {"space_id": "space_demo", "user_id": uid, "role": role})
 
     adapters = [
@@ -1004,13 +1061,13 @@ def seed_platform() -> None:
     ]
     for agid, name, code, typ, desc, adapter_id, risk, approval, cfg in agents:
         version_id = f"ver_{agid}_100"
-        _upsert_by_id("agents", agid, {"id": agid, "name": name, "code": code, "type": typ, "description": desc, "owner_id": "u_admin", "status": "published", "default_version_id": version_id, "risk_level": risk, "require_human_approval": approval, "created_at": t, "updated_at": t})
+        _upsert_by_id("agents", agid, {"id": agid, "name": name, "code": code, "type": typ, "description": desc, "owner_id": demo_owner_id, "status": "published", "default_version_id": version_id, "risk_level": risk, "require_human_approval": approval, "created_at": t, "updated_at": t})
         _upsert_by_id("agent_versions", version_id, {"id": version_id, "agent_id": agid, "version": "1.0.0", "backend_type": "builtin", "adapter_id": adapter_id, "config_json": cfg, "input_schema": {}, "output_schema": {"answer": "string", "tables": "array", "charts": "array", "trace_id": "string"}, "status": "published", "created_at": t})
         for role_id in ["r_admin", "r_business"]:
             if not many("SELECT id FROM agent_permissions WHERE agent_id=? AND subject_type='role' AND subject_id=? AND permission='use'", [agid, role_id]):
                 insert("agent_permissions", {"id": new_id("aperm"), "agent_id": agid, "subject_type": "role", "subject_id": role_id, "permission": "use"})
 
-    _upsert_by_id("data_sources", "ds_business_sqlite", {"id": "ds_business_sqlite", "name": "独立演示 SQLite 数据源", "type": "sqlite", "connection_config": {"path": str(BUSINESS_DB_PATH)}, "owner_id": "u_admin", "status": "active", "created_at": t})
+    _upsert_by_id("data_sources", "ds_business_sqlite", {"id": "ds_business_sqlite", "name": "独立演示 SQLite 数据源", "type": "sqlite", "connection_config": {"path": str(BUSINESS_DB_PATH)}, "owner_id": demo_owner_id, "status": "active", "created_at": t})
     datasets = [
         ("dataset_orders", "销售订单", "Sales", "sales_orders", "订单、收入、区域、渠道、商品和客户分层样例表", "confidential"),
         ("dataset_tickets", "客户工单", "Service", "support_tickets", "客户服务工单、问题类型、根因和闭环状态样例表", "confidential"),
@@ -1065,7 +1122,7 @@ def seed_platform() -> None:
         ("metric_business_risk", "dataset_business_daily", "经营风险分", "risk_score", "avg(risk_score)", "综合收入、工单和转化率的风险评分"),
     ]
     for mid, dsid, name, code, formula, desc in metrics:
-        _upsert_by_id("metrics", mid, {"id": mid, "dataset_id": dsid, "name": name, "code": code, "formula": formula, "description": desc, "time_grain": "month", "owner_id": "u_admin", "status": "published"})
+        _upsert_by_id("metrics", mid, {"id": mid, "dataset_id": dsid, "name": name, "code": code, "formula": formula, "description": desc, "time_grain": "month", "owner_id": demo_owner_id, "status": "published"})
     for object_id, syns in {
         "metric_revenue": ["销售额", "营收", "GMV", "营业收入"],
         "metric_order_count": ["订单量", "成交单数", "单量"],
@@ -1087,7 +1144,7 @@ def seed_platform() -> None:
         ("kb_metric_glossary", "指标口径知识库", "glossary", "指标定义、业务术语、同义词和口径说明。"),
         ("kb_report_templates", "分析报告模板库", "template", "经营月报、复盘、归因分析模板。"),
     ]:
-        _upsert_by_id("knowledge_bases", kb_id, {"id": kb_id, "name": name, "type": typ, "backend_type": "mock", "adapter_id": "ad_mock_knowledge", "description": desc, "owner_id": "u_admin", "status": "active"})
+        _upsert_by_id("knowledge_bases", kb_id, {"id": kb_id, "name": name, "type": typ, "backend_type": "mock", "adapter_id": "ad_mock_knowledge", "description": desc, "owner_id": demo_owner_id, "status": "active"})
         _upsert_by_id("knowledge_versions", f"kbv_{kb_id}_100", {"id": f"kbv_{kb_id}_100", "knowledge_base_id": kb_id, "version": "1.0.0", "checksum": "demo", "status": "active", "created_at": t})
     for agid in ["agent_business_knowledge", "agent_business_analysis", "agent_executive_report", "agent_semantic"]:
         for kb_id in ["kb_business_rules", "kb_metric_glossary", "kb_report_templates"]:
@@ -1103,7 +1160,7 @@ def seed_platform() -> None:
         ("term_report", "经营分析报告", "report", "Business", "由数据、图表、证据链和人工复核共同构成的经营分析报告草稿。", None, None, ["经营月报", "复盘报告"]),
     ]
     for tid, term, typ, domain, definition, obj_type, obj_id, syns in terms:
-        _upsert_by_id("semantic_terms", tid, {"id": tid, "term": term, "term_type": typ, "business_domain": domain, "definition": definition, "canonical_object_type": obj_type, "canonical_object_id": obj_id, "synonyms": syns, "owner_id": "u_admin", "status": "published", "created_at": t})
+        _upsert_by_id("semantic_terms", tid, {"id": tid, "term": term, "term_type": typ, "business_domain": domain, "definition": definition, "canonical_object_type": obj_type, "canonical_object_id": obj_id, "synonyms": syns, "owner_id": demo_owner_id, "status": "published", "created_at": t})
 
     templates = [
         ("qt_revenue_top_channel", "收入 Top 渠道", "Sales", "topn", "本月收入最高的渠道有哪些？", "dataset_orders", "SELECT channel, SUM(revenue) AS revenue, COUNT(*) AS order_count FROM sales_orders WHERE order_date >= :start AND order_date < :end GROUP BY channel ORDER BY revenue DESC LIMIT 10", "bar", ["本月收入最高的渠道有哪些？", "渠道收入Top10"]),
@@ -1123,10 +1180,10 @@ def seed_platform() -> None:
         ("dq_business_risk_range", "dataset_business_daily", "经营风险分必须在 0-100", "range", "risk_score", "risk_score < 0 OR risk_score > 100", "high"),
     ]
     for rid, dsid, name, typ, field, expr, sev in quality_rules:
-        _upsert_by_id("data_quality_rules", rid, {"id": rid, "dataset_id": dsid, "name": name, "rule_type": typ, "field_name": field, "expression": expr, "severity": sev, "owner_id": "u_admin", "status": "active", "created_at": t})
+        _upsert_by_id("data_quality_rules", rid, {"id": rid, "dataset_id": dsid, "name": name, "rule_type": typ, "field_name": field, "expression": expr, "severity": sev, "owner_id": demo_owner_id, "status": "active", "created_at": t})
 
     panel_id = "panel_business_overview"
-    _upsert_by_id("dashboard_panels", panel_id, {"id": panel_id, "name": "经营数据智能总览", "business_domain": "Business", "description": "内置演示面板：收入、订单、工单、营销 ROI 和经营风险。", "owner_id": "u_admin", "layout_json": {"columns": 12}, "status": "published", "created_at": t, "updated_at": t})
+    _upsert_by_id("dashboard_panels", panel_id, {"id": panel_id, "name": "经营数据智能总览", "business_domain": "Business", "description": "内置演示面板：收入、订单、工单、营销 ROI 和经营风险。", "owner_id": demo_owner_id, "layout_json": {"columns": 12}, "status": "published", "created_at": t, "updated_at": t})
     widgets = [
         ("w_revenue", "metric_card", "本月收入", "dataset_orders", "metric_revenue", "SELECT SUM(revenue) AS value FROM sales_orders WHERE order_date >= '2026-05-01'", {"w":3,"h":2,"x":0,"y":0}),
         ("w_order_count", "metric_card", "本月订单数", "dataset_orders", "metric_order_count", "SELECT COUNT(*) AS value FROM sales_orders WHERE order_date >= '2026-05-01'", {"w":3,"h":2,"x":3,"y":0}),
@@ -1138,10 +1195,10 @@ def seed_platform() -> None:
         _upsert_by_id("panel_widgets", wid, {"id": wid, "panel_id": panel_id, "widget_type": wtype, "title": title, "dataset_id": dsid, "metric_id": mid, "query_sql": sql, "chart_spec": {"chart_type": wtype}, "position_json": pos, "created_at": t})
 
     workspace_id = "codex_ws_data_agent_platform"
-    _upsert_by_id("codex_workspaces", workspace_id, {"id": workspace_id, "name": "Data Agent Platform 代码仓", "repo_path": str(ROOT), "default_branch": "main", "allowed_paths": ["apps/", "database/", "docs/", "scripts/"], "test_command": "python scripts/smoke_test.py && python scripts/security_smoke_test.py && python scripts/standalone_regression_test.py", "owner_id": "u_admin", "status": "active", "created_at": t})
+    _upsert_by_id("codex_workspaces", workspace_id, {"id": workspace_id, "name": "Data Agent Platform 代码仓", "repo_path": str(ROOT), "default_branch": "main", "allowed_paths": ["apps/", "database/", "docs/", "scripts/"], "test_command": "python scripts/smoke_test.py && python scripts/security_smoke_test.py && python scripts/standalone_regression_test.py", "owner_id": demo_owner_id, "status": "active", "created_at": t})
 
-    _upsert_by_id("eval_sets", "eval_sales_v1", {"id": "eval_sales_v1", "name": "销售经营问数 V1 评测集", "business_domain": "Sales", "description": "用于验证收入、订单、渠道、区域查询准确率和 SQL 可追溯性。", "owner_id": "u_admin"})
-    _upsert_by_id("eval_sets", "eval_full_agent_v1", {"id": "eval_full_agent_v1", "name": "独立数据智能体能力评测集", "business_domain": "Business", "description": "覆盖问数、工单归因、异常、语义、数据质量、面板和 Codex 嵌套。", "owner_id": "u_admin"})
+    _upsert_by_id("eval_sets", "eval_sales_v1", {"id": "eval_sales_v1", "name": "销售经营问数 V1 评测集", "business_domain": "Sales", "description": "用于验证收入、订单、渠道、区域查询准确率和 SQL 可追溯性。", "owner_id": demo_owner_id})
+    _upsert_by_id("eval_sets", "eval_full_agent_v1", {"id": "eval_full_agent_v1", "name": "独立数据智能体能力评测集", "business_domain": "Business", "description": "覆盖问数、工单归因、异常、语义、数据质量、面板和 Codex 嵌套。", "owner_id": demo_owner_id})
     eval_questions = [
         ("eval_sales_v1", "本月收入最高的渠道有哪些？"),
         ("eval_sales_v1", "按区域统计本月收入"),
