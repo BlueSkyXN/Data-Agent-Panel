@@ -24,6 +24,9 @@ EXPECTED_MANIFEST = {
     "lane": "source",
     "version_source": "commit",
 }
+EXPECTED_DEVIATIONS = [
+    "business-image = PYTHON_BASE_IMAGE is a generated Dockerfile placeholder resolved from the reviewed immutable base-image input during wrapper export"
+]
 EXPECTED_BUNDLE_FILES = {".dockerignore", "BUILD_SOURCE.json", "Dockerfile", "README.md", "entrypoint.sh", "hfs-dev.toml"}
 FORBIDDEN_BUNDLE_PATHS = {".env", ".env.local", "apps", "data", "database", "docs", "local", "logs", "scripts"}
 
@@ -65,10 +68,14 @@ def check_manifest(report: Report, root: Path) -> None:
     if not manifest_path.is_file():
         return
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables"}
+    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables", "deviations"}
     report.check(set(manifest) == allowed_keys, "manifest is a minimal HFS semantic registry", str(sorted(set(manifest) - allowed_keys)))
     for key, value in EXPECTED_MANIFEST.items():
         report.check(manifest.get(key) == value, f"manifest {key} is {value!r}", repr(manifest.get(key)))
+    report.check(
+        manifest.get("deviations") == EXPECTED_DEVIATIONS,
+        "manifest deviations document only the reviewed base-image placeholder",
+    )
     for key in ("local_only", "secrets", "variables"):
         report.check(key_list(manifest.get(key)), f"manifest {key} contains only environment key names")
     if all(key_list(manifest.get(key)) for key in ("local_only", "secrets", "variables")):
