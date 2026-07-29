@@ -84,7 +84,12 @@ jobs:
           test ! -e "$BUNDLE_DIR/apps"
           test ! -e "$BUNDLE_DIR/.env"
       - name: Install Hugging Face CLI
-        run: python -m pip install "huggingface_hub[cli]==1.24.0"
+        run: |
+          python -m pip install "huggingface_hub==1.5.0" "click==8.3.1"
+          python -m huggingface_hub.cli.hf version
+          python -m huggingface_hub.cli.hf --help >/dev/null
+          python -m huggingface_hub.cli.hf upload --help >/dev/null
+          python -m huggingface_hub.cli.hf download --help >/dev/null
       - name: Preflight target Space wrapper boundary
         shell: bash
         run: |
@@ -118,7 +123,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          hf upload "$SPACE_ID" "$RUNNER_TEMP/data-agent-panel-hfs-wrapper" . \
+          python -m huggingface_hub.cli.hf upload "$SPACE_ID" "$RUNNER_TEMP/data-agent-panel-hfs-wrapper" . \
             --repo-type space \
             --commit-message "Publish Data Agent Panel HFS wrapper source ${SOURCE_REF} wrapper ${GITHUB_SHA}"
       - name: Read back thin boundary and provenance
@@ -126,7 +131,7 @@ jobs:
         run: |
           set -euo pipefail
           READBACK_DIR="$RUNNER_TEMP/data-agent-panel-hfs-readback"
-          hf download "$SPACE_ID" BUILD_SOURCE.json \
+          python -m huggingface_hub.cli.hf download "$SPACE_ID" BUILD_SOURCE.json \
             --repo-type space \
             --local-dir "$READBACK_DIR"
           cmp "$RUNNER_TEMP/data-agent-panel-hfs-wrapper/BUILD_SOURCE.json" "$READBACK_DIR/BUILD_SOURCE.json"
