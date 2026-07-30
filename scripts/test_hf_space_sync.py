@@ -53,6 +53,8 @@ def manifest_text(**overrides: object) -> str:
         "space": "example-org/demo",
         "project_class": "preview",
         "target_role": "primary",
+        "space_visibility": "protected",
+        "bucket_visibility": "private",
         "env_file": ".env",
         "secret_files": [],
         "sovereignty": "sovereign",

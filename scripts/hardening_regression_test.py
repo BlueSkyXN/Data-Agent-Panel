@@ -138,6 +138,138 @@ def assert_bootstrap_admin_can_seed_empty_sqlite():
         db.settings.bootstrap_admin_department = original_bootstrap_department
 
 
+def assert_bootstrap_admin_takes_precedence_over_demo_admin():
+    original_db_path = db.DB_PATH
+    original_business_db_path = db.BUSINESS_DB_PATH
+    original_demo_mode = db.settings.demo_mode
+    original_allow_demo_seed = db.settings.allow_demo_seed
+    original_bootstrap_username = db.settings.bootstrap_admin_username
+    original_bootstrap_password = db.settings.bootstrap_admin_password
+    original_bootstrap_name = db.settings.bootstrap_admin_name
+    original_bootstrap_email = db.settings.bootstrap_admin_email
+    original_bootstrap_department = db.settings.bootstrap_admin_department
+
+    def admin_role_count(user_id):
+        return db.one(
+            """
+            SELECT COUNT(*) c
+            FROM user_roles ur
+            JOIN roles r ON r.id=ur.role_id
+            WHERE ur.user_id=? AND r.name='admin'
+            """,
+            [user_id],
+        )['c']
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db.DB_PATH = tmp_path / 'platform.db'
+            db.BUSINESS_DB_PATH = tmp_path / 'business.db'
+            db.settings.demo_mode = True
+            db.settings.allow_demo_seed = True
+            db.settings.bootstrap_admin_name = 'Configured Admin'
+            db.settings.bootstrap_admin_email = 'configured-admin@example.invalid'
+            db.settings.bootstrap_admin_department = 'Platform'
+
+            # A configured custom username owns the demo fixtures without also
+            # leaving the default admin/admin123 account available.
+            db.settings.bootstrap_admin_username = 'configured-admin'
+            db.settings.bootstrap_admin_password = 'configured-admin-pass'
+            db.init_all(reset=True)
+            user = db.one('SELECT * FROM users WHERE username=?', ['configured-admin'])
+            assert user is not None
+            assert user['status'] == 'active'
+            assert verify_secret('configured-admin-pass', user['password_hash'])
+            assert admin_role_count(user['id']) == 1
+            assert db.one('SELECT id FROM users WHERE username=?', ['admin']) is None
+            assert db.one('SELECT id FROM users WHERE username=?', ['user']) is not None
+            assert db.one('SELECT id FROM tool_adapters WHERE id=?', ['ad_mock_router']) is not None
+            assert db.one('SELECT id FROM datasets WHERE id=?', ['dataset_orders']) is not None
+            assert db.one('SELECT owner_id FROM project_spaces WHERE id=?', ['space_demo'])['owner_id'] == user['id']
+            assert db.one('SELECT owner_id FROM data_sources WHERE id=?', ['ds_business_sqlite'])['owner_id'] == user['id']
+
+            before = {
+                'users': db.one('SELECT COUNT(*) c FROM users')['c'],
+                'admin_roles': admin_role_count(user['id']),
+                'audits': db.one(
+                    "SELECT COUNT(*) c FROM audit_logs WHERE action='bootstrap_admin_created' AND object_id=?",
+                    [user['id']],
+                )['c'],
+            }
+            db.settings.bootstrap_admin_password = 'changed-env-value-must-not-reset-admin'
+            db.init_all(reset=False)
+            unchanged = db.one('SELECT password_hash FROM users WHERE id=?', [user['id']])
+            assert verify_secret('configured-admin-pass', unchanged['password_hash'])
+            assert not verify_secret('changed-env-value-must-not-reset-admin', unchanged['password_hash'])
+            assert db.one('SELECT COUNT(*) c FROM users')['c'] == before['users']
+            assert admin_role_count(user['id']) == before['admin_roles']
+            assert db.one(
+                "SELECT COUNT(*) c FROM audit_logs WHERE action='bootstrap_admin_created' AND object_id=?",
+                [user['id']],
+            )['c'] == before['audits']
+
+            # The default username must use the configured password, never the
+            # demo password, when it is the bootstrap target.
+            db.settings.bootstrap_admin_username = 'admin'
+            db.settings.bootstrap_admin_password = 'configured-default-name-pass'
+            db.init_all(reset=True)
+            named_admin = db.one('SELECT * FROM users WHERE username=?', ['admin'])
+            assert named_admin is not None
+            assert verify_secret('configured-default-name-pass', named_admin['password_hash'])
+            assert not verify_secret('admin123', named_admin['password_hash'])
+            assert admin_role_count(named_admin['id']) == 1
+
+            # An existing demo user matching the configured username is
+            # promoted in place and becomes the demo fixture owner.
+            db.settings.bootstrap_admin_username = 'user'
+            db.settings.bootstrap_admin_password = 'promoted-user-pass'
+            db.init_all(reset=True)
+            promoted = db.one('SELECT * FROM users WHERE username=?', ['user'])
+            assert promoted is not None
+            assert promoted['id'] == 'u_user'
+            assert verify_secret('promoted-user-pass', promoted['password_hash'])
+            assert admin_role_count(promoted['id']) == 1
+            assert db.one('SELECT id FROM users WHERE username=?', ['admin']) is None
+            assert db.one('SELECT owner_id FROM project_spaces WHERE id=?', ['space_demo'])['owner_id'] == promoted['id']
+            assert db.one(
+                "SELECT COUNT(*) c FROM audit_logs WHERE action='bootstrap_admin_elevated' AND object_id=?",
+                [promoted['id']],
+            )['c'] == 1
+
+            # Existing installations that still have the known demo password
+            # are hardened when a custom bootstrap administrator is added.
+            db.settings.bootstrap_admin_username = ''
+            db.settings.bootstrap_admin_password = ''
+            db.init_all(reset=True)
+            seeded_default = db.one('SELECT * FROM users WHERE username=?', ['admin'])
+            assert seeded_default is not None
+            assert verify_secret('admin123', seeded_default['password_hash'])
+            db.update('users', 'id', seeded_default['id'], {'password': 'admin123', 'password_hash': ''})
+            db.settings.bootstrap_admin_username = 'migrated-admin'
+            db.settings.bootstrap_admin_password = 'migrated-admin-pass'
+            db.init_all(reset=False)
+            migrated = db.one('SELECT * FROM users WHERE username=?', ['migrated-admin'])
+            hardened_default = db.one('SELECT * FROM users WHERE username=?', ['admin'])
+            assert migrated is not None
+            assert verify_secret('migrated-admin-pass', migrated['password_hash'])
+            assert admin_role_count(migrated['id']) == 1
+            assert hardened_default is not None
+            assert hardened_default['status'] != 'active'
+            assert hardened_default['password'] == ''
+            assert not verify_secret('admin123', hardened_default['password_hash'])
+            assert db.one('SELECT owner_id FROM project_spaces WHERE id=?', ['space_demo'])['owner_id'] == migrated['id']
+    finally:
+        db.DB_PATH = original_db_path
+        db.BUSINESS_DB_PATH = original_business_db_path
+        db.settings.demo_mode = original_demo_mode
+        db.settings.allow_demo_seed = original_allow_demo_seed
+        db.settings.bootstrap_admin_username = original_bootstrap_username
+        db.settings.bootstrap_admin_password = original_bootstrap_password
+        db.settings.bootstrap_admin_name = original_bootstrap_name
+        db.settings.bootstrap_admin_email = original_bootstrap_email
+        db.settings.bootstrap_admin_department = original_bootstrap_department
+
+
 class RedirectHandler(BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802
         self.send_response(302)
@@ -814,6 +946,7 @@ def main():
 
     assert_demo_seed_can_be_disabled()
     assert_bootstrap_admin_can_seed_empty_sqlite()
+    assert_bootstrap_admin_takes_precedence_over_demo_admin()
     assert_external_adapter_rejects_redirect()
     db.init_all(reset=True)
 

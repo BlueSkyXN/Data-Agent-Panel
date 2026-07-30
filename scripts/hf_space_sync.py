@@ -6,7 +6,8 @@
   push   从本地 env 文件推送已登记设置，并更新和读回种子
   pull   将实例配置回收到 local/hfs-sync-pulled/，绝不覆盖根种子
 
-依赖：Python 3.11+、huggingface_hub>=1.5（含本脚本调用的 HF CLI）；
+依赖：Python 3.11+、huggingface_hub==1.25.1、click==8.4.2
+（后者是本脚本调用的 module HF CLI 的直接运行依赖）；
 仅处理 YAML seed 时需要 PyYAML>=6.0。
 脚本不会打印 secret 值；HF_TOKEN/GH_TOKEN 只作为本地控制凭据，不推 Space。
 """
@@ -214,6 +215,10 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise SyncError(f"env_file 必须为 {expected_env_file!r}")
     if manifest.get("secret_files") != []:
         raise SyncError("secret_files 当前必须为空列表")
+    if manifest.get("space_visibility") != "protected":
+        raise SyncError('space_visibility 必须为 "protected"')
+    if manifest.get("bucket_visibility") != "private":
+        raise SyncError('bucket_visibility 必须为 "private"')
 
     space = manifest.get("space")
     if not isinstance(space, str) or not space:
@@ -377,6 +382,27 @@ def bucket_cp(source: str, destination: str, token: str) -> tuple[bool, str]:
     return result.returncode == 0, message[-1] if message else ""
 
 
+def bucket_read_bytes(source: str, token: str) -> tuple[bool, bytes]:
+    process_env = os.environ.copy()
+    process_env["HF_TOKEN"] = token
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "huggingface_hub.cli.hf",
+            "buckets",
+            "cp",
+            source,
+            "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=process_env,
+    )
+    return result.returncode == 0, result.stdout
+
+
 def normalized_sensitive_key(key: str) -> bool:
     with_boundaries = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
     normalized = with_boundaries.lower().replace("-", "_").replace(".", "_")
@@ -501,20 +527,19 @@ def strip_unquoted_comment(line: str) -> str:
     return line
 
 
-def sensitive_seed_fields(
-    path: Path,
+def sensitive_seed_text(
+    raw: str,
+    suffix: str,
     protected_values: dict[str, tuple[str, str]] | None = None,
     *,
     strict_format: bool = False,
 ) -> list[str]:
     protected_values = protected_values or {}
-    suffix = path.suffix.lower()
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    suffix = suffix.lower()
     literal_findings = ["literal-token-pattern"] if LITERAL_SECRET.search(raw) else []
     if suffix == ".toml":
         try:
-            with path.open("rb") as file:
-                parsed = tomllib.load(file)
+            parsed = tomllib.loads(raw)
         except tomllib.TOMLDecodeError:
             raise SyncError("种子 TOML 解析失败（不输出配置原文）") from None
         return deduplicated(literal_findings + structured_sensitive_fields(parsed, protected_values))
@@ -566,6 +591,19 @@ def sensitive_seed_fields(
             findings.extend(scalar_sensitive_fields(line, f"line:{number}", protected_values))
     return deduplicated(findings)
 
+
+def sensitive_seed_fields(
+    path: Path,
+    protected_values: dict[str, tuple[str, str]] | None = None,
+    *,
+    strict_format: bool = False,
+) -> list[str]:
+    return sensitive_seed_text(
+        path.read_text(encoding="utf-8", errors="replace"),
+        path.suffix,
+        protected_values,
+        strict_format=strict_format,
+    )
 
 def configured_optional_secrets(
     env_values: dict[str, str], optional_secrets: set[str]
@@ -774,7 +812,7 @@ def cmd_diff(
                 local_seed,
                 protected_secret_values(env_values, manifest),
             )
-            differences += report("种子疑似含实际 secret", sensitive)
+            differences += report("种子含受保护值或敏感字段", sensitive)
 
             seed_copy = temp / f"seed-{local_seed.name}"
             seed_ok, _ = bucket_cp(
@@ -1038,6 +1076,218 @@ def unique_pull_dir(root: Path, space: str) -> Path:
     finally:
         os.close(base_descriptor)
     raise SyncError("无法创建唯一的 pull 目录")
+def stat_identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
+
+
+def validate_open_directory_at(
+    parent_descriptor: int,
+    name: str,
+    descriptor: int,
+) -> None:
+    try:
+        entry_stat = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError as exc:
+        raise SyncError("pull staging 在校验期间消失") from exc
+    descriptor_stat = os.fstat(descriptor)
+    if stat.S_ISLNK(entry_stat.st_mode) or not stat.S_ISDIR(entry_stat.st_mode):
+        raise SyncError("pull staging 必须是普通目录")
+    if not stat.S_ISDIR(descriptor_stat.st_mode):
+        raise SyncError("pull staging 打开结果不是目录")
+    if stat_identity(entry_stat) != stat_identity(descriptor_stat):
+        raise SyncError("pull staging 在校验期间被替换")
+    os.fchmod(descriptor, 0o700)
+
+
+def create_private_staging_at(parent_descriptor: int) -> tuple[str, int]:
+    for _ in range(256):
+        name = f".staging-{os.urandom(12).hex()}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_descriptor)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise SyncError("无法在受信 pull 目录中创建私有 staging") from exc
+
+        try:
+            descriptor = os.open(
+                name,
+                directory_open_flags(),
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            try:
+                os.rmdir(name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+            raise SyncError("pull staging 无法安全打开") from exc
+        try:
+            validate_open_directory_at(parent_descriptor, name, descriptor)
+        except Exception:
+            os.close(descriptor)
+            try:
+                os.rmdir(name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+            raise
+        return name, descriptor
+    raise SyncError("无法创建唯一的 pull staging 目录")
+
+
+def validate_open_regular_file_at(
+    directory_descriptor: int,
+    filename: str,
+    descriptor: int,
+) -> None:
+    try:
+        entry_stat = os.stat(
+            filename,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError as exc:
+        raise SyncError("实例配置 staging 文件在校验期间消失") from exc
+    descriptor_stat = os.fstat(descriptor)
+    if stat.S_ISLNK(entry_stat.st_mode) or not stat.S_ISREG(entry_stat.st_mode):
+        raise SyncError("实例配置 staging 结果不是普通文件")
+    if not stat.S_ISREG(descriptor_stat.st_mode):
+        raise SyncError("实例配置 staging 打开结果不是普通文件")
+    if stat_identity(entry_stat) != stat_identity(descriptor_stat):
+        raise SyncError("实例配置 staging 文件在校验期间被替换")
+    os.fchmod(descriptor, 0o600)
+
+
+def create_private_file_at(
+    directory_descriptor: int,
+    filename: str,
+    content: bytes,
+) -> int:
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(
+            filename,
+            flags,
+            0o600,
+            dir_fd=directory_descriptor,
+        )
+    except OSError as exc:
+        raise SyncError("无法在 pull staging 中创建私有配置文件") from exc
+    try:
+        validate_open_regular_file_at(directory_descriptor, filename, descriptor)
+        remaining = memoryview(content)
+        while remaining:
+            try:
+                written = os.write(descriptor, remaining)
+            except InterruptedError:
+                continue
+            if written <= 0:
+                raise SyncError("写入 pull staging 文件失败")
+            remaining = remaining[written:]
+        os.lseek(descriptor, 0, os.SEEK_SET)
+    except Exception:
+        os.close(descriptor)
+        try:
+            os.unlink(filename, dir_fd=directory_descriptor)
+        except OSError:
+            pass
+        raise
+    return descriptor
+
+
+def read_open_file(descriptor: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        try:
+            chunk = os.read(descriptor, 1024 * 1024)
+        except InterruptedError:
+            continue
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return b"".join(chunks)
+
+
+def validate_published_file_at(
+    directory_descriptor: int,
+    filename: str,
+    source_descriptor: int,
+) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        published_descriptor = os.open(
+            filename,
+            flags,
+            dir_fd=directory_descriptor,
+        )
+    except OSError as exc:
+        raise SyncError("实例配置回收结果无法安全打开") from exc
+    try:
+        published_stat = os.fstat(published_descriptor)
+        source_stat = os.fstat(source_descriptor)
+        if not stat.S_ISREG(published_stat.st_mode):
+            raise SyncError("实例配置回收结果不是普通文件")
+        if stat_identity(published_stat) != stat_identity(source_stat):
+            raise SyncError("实例配置发布结果与受信 staging 文件不一致")
+        os.fchmod(published_descriptor, 0o600)
+    finally:
+        os.close(published_descriptor)
+
+
+def remove_entry_at(directory_descriptor: int, name: str) -> None:
+    try:
+        entry_stat = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(entry_stat.st_mode) and not stat.S_ISLNK(entry_stat.st_mode):
+        os.rmdir(name, dir_fd=directory_descriptor)
+    else:
+        os.unlink(name, dir_fd=directory_descriptor)
+
+
+def cleanup_staging_at(
+    parent_descriptor: int,
+    staging_name: str,
+    staging_descriptor: int,
+    filename: str,
+) -> None:
+    try:
+        os.unlink(filename, dir_fd=staging_descriptor)
+    except FileNotFoundError:
+        pass
+
+    staging_identity = stat_identity(os.fstat(staging_descriptor))
+    matching_names: list[str] = []
+    # The owned directory may have been renamed; find it by inode without
+    # resolving any attacker-controlled path.
+    for entry in os.listdir(parent_descriptor):
+        try:
+            entry_stat = os.stat(
+                entry,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            continue
+        if stat_identity(entry_stat) == staging_identity:
+            matching_names.append(entry)
+
+    for entry in matching_names:
+        os.rmdir(entry, dir_fd=parent_descriptor)
+    if staging_name not in matching_names:
+        remove_entry_at(parent_descriptor, staging_name)
+    if not matching_names:
+        raise SyncError("pull staging 已被移出受信父目录，无法安全清理")
 
 
 def cmd_pull(
@@ -1061,25 +1311,113 @@ def cmd_pull(
     filename = PurePosixPath(str(manifest.get("mount_config_object", "config/config.toml"))).name
     pull_dir = unique_pull_dir(root, space)
     downloaded = pull_dir / filename
-    previous_umask = os.umask(0o077)
+    pull_descriptor = open_private_directory(root, pull_dir)
+    staging_name: str | None = None
+    staging_descriptor: int | None = None
+    file_descriptor: int | None = None
+    published = False
+    sensitive: list[str] = []
     try:
-        success, _ = bucket_cp(runtime_uri, str(downloaded), token)
+        success, content = bucket_read_bytes(runtime_uri, token)
+        if not success:
+            raise SyncError(f"实例配置回收失败：{runtime_uri}")
+        validate_open_directory(root, pull_dir, pull_descriptor)
+        staging_name, staging_descriptor = create_private_staging_at(pull_descriptor)
+        file_descriptor = create_private_file_at(
+            staging_descriptor,
+            filename,
+            content,
+        )
+        staged_content = read_open_file(file_descriptor)
+        if staged_content != content:
+            raise SyncError("pull staging 内容与 HF CLI 内存输出不一致")
+        sensitive = sensitive_seed_text(
+            staged_content.decode("utf-8", errors="replace"),
+            PurePosixPath(filename).suffix,
+            protected_secret_values(env_values, manifest),
+        )
+        validate_open_directory_at(
+            pull_descriptor,
+            staging_name,
+            staging_descriptor,
+        )
+        validate_open_regular_file_at(
+            staging_descriptor,
+            filename,
+            file_descriptor,
+        )
+        if read_open_file(file_descriptor) != content:
+            raise SyncError("pull staging 内容在安全检查期间被修改")
+        try:
+            os.link(
+                filename,
+                filename,
+                src_dir_fd=staging_descriptor,
+                dst_dir_fd=pull_descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise SyncError("实例配置回收目标已存在，拒绝覆盖") from exc
+        except OSError as exc:
+            raise SyncError("实例配置无法安全发布到最终 pull 目录") from exc
+        published = True
+        validate_published_file_at(
+            pull_descriptor,
+            filename,
+            file_descriptor,
+        )
+        validate_open_directory(root, pull_dir, pull_descriptor)
+    except Exception:
+        if published:
+            try:
+                os.unlink(filename, dir_fd=pull_descriptor)
+            except OSError:
+                pass
+        raise
     finally:
-        os.umask(previous_umask)
-    if not success:
-        raise SyncError(f"实例配置回收失败：{runtime_uri}")
-    if not downloaded.is_file():
-        raise SyncError(f"实例配置回收结果不是普通文件：{runtime_uri}")
-    downloaded.chmod(0o600)
+        # A cleanup failure must not replace the security/config error already
+        # in flight from validation or parsing.
+        primary_exception_active = sys.exc_info()[0] is not None
+        cleanup_error: Exception | None = None
+        try:
+            if file_descriptor is not None:
+                try:
+                    os.close(file_descriptor)
+                except OSError as exc:
+                    cleanup_error = exc
+            if staging_name is not None and staging_descriptor is not None:
+                try:
+                    cleanup_staging_at(
+                        pull_descriptor,
+                        staging_name,
+                        staging_descriptor,
+                        filename,
+                    )
+                except Exception as exc:
+                    cleanup_error = cleanup_error or exc
+            if cleanup_error is not None and not primary_exception_active and published:
+                try:
+                    os.unlink(filename, dir_fd=pull_descriptor)
+                    published = False
+                except OSError as exc:
+                    cleanup_error = cleanup_error or exc
+        finally:
+            if staging_descriptor is not None:
+                try:
+                    os.close(staging_descriptor)
+                except OSError as exc:
+                    cleanup_error = cleanup_error or exc
+            try:
+                os.close(pull_descriptor)
+            except OSError as exc:
+                cleanup_error = cleanup_error or exc
+        if cleanup_error is not None and not primary_exception_active:
+            raise SyncError("pull staging 清理失败") from cleanup_error
 
-    sensitive = sensitive_seed_fields(
-        downloaded,
-        protected_secret_values(env_values, manifest),
-    )
     relative = downloaded.relative_to(root)
     print(f"实例配置已回收：{relative}（来源 {runtime_uri}）")
     if sensitive:
-        print(f"WARN：回收配置疑似包含 secret 字段：{sensitive}")
+        print(f"WARN：回收配置包含受保护值或敏感字段：{sensitive}")
     print("根种子未修改；请人工 diff、脱密后再手工合并，随后单独执行 push")
     return 0
 

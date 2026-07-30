@@ -6,6 +6,8 @@ lane = "source"
 version_source = "commit"
 project_class = "preview"
 target_role = "candidate"
+space_visibility = "protected"
+bucket_visibility = "private"
 env_file = "local/hfs-targets/candidate.env"
 secret_files = []
 
@@ -30,4 +32,8 @@ variables = [
   "DAP_SQLITE_MIN_FREE_MB",
   "DAP_SQLITE_INIT_LOCK_TIMEOUT_SECONDS",
   "PORT",
+]
+
+deviations = [
+  "business-image = PYTHON_BASE_IMAGE is a generated Dockerfile placeholder resolved from the reviewed immutable base-image input during wrapper export",
 ]
