@@ -322,7 +322,8 @@ def check_hfs_workflow() -> None:
         raise SystemExit("HFS deploy workflow must not accept an arbitrary Space id")
     upload_offset = workflow.index('python -m huggingface_hub.cli.hf upload "$SPACE_ID"')
     required_before_upload = (
-        'if os.environ["HFS_TARGET"] == "production" and space_id != os.environ["FORMAL_SPACE"]:',
+        'if manifest.get("target_role") != os.environ["HFS_TARGET"]:',
+        'if os.environ["HFS_TARGET"] == "primary" and space_id != os.environ["FORMAL_SPACE"]:',
         'if info.private is not True:',
         '[[ "$GITHUB_REF" == "refs/heads/main" ]]',
         'git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main',
@@ -333,9 +334,9 @@ def check_hfs_workflow() -> None:
     for fragment in required_before_upload:
         offset = workflow.find(fragment)
         if offset < 0 or offset > upload_offset:
-            raise SystemExit(f"HFS production pre-upload gate is missing or late: {fragment!r}")
+            raise SystemExit(f"HFS primary pre-upload gate is missing or late: {fragment!r}")
     if 'os.environ["HFS_TARGET"] == "candidate" and not info.private' in workflow:
-        raise SystemExit("HFS deploy workflow must require private visibility for production too")
+        raise SystemExit("HFS deploy workflow must require non-public visibility for primary too")
     if not (ROOT / "scripts" / "hf_space_sync.py").is_file():
         raise SystemExit("reference Settings diff/push/readback tool is missing")
 

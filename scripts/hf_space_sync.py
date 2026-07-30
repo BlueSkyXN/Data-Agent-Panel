@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HFS v2 示例同步脚本。
+"""HFS v2.1 示例同步脚本。
 
 命令：
   diff   比较本地登记、Space 设置、种子和实例配置；有差异返回 1
@@ -605,6 +605,7 @@ def sensitive_seed_fields(
         strict_format=strict_format,
     )
 
+
 def configured_optional_secrets(
     env_values: dict[str, str], optional_secrets: set[str]
 ) -> set[str]:
@@ -1076,6 +1077,8 @@ def unique_pull_dir(root: Path, space: str) -> Path:
     finally:
         os.close(base_descriptor)
     raise SyncError("无法创建唯一的 pull 目录")
+
+
 def stat_identity(value: os.stat_result) -> tuple[int, int]:
     return value.st_dev, value.st_ino
 

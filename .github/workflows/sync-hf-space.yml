@@ -64,8 +64,10 @@ jobs:
           space_id = manifest.get("space", "")
           if not isinstance(space_id, str) or space_id.count("/") != 1:
               raise SystemExit(f"invalid Space id in {os.environ['HFS_MANIFEST']}: {space_id!r}")
-          if os.environ["HFS_TARGET"] == "production" and space_id != os.environ["FORMAL_SPACE"]:
-              raise SystemExit("production manifest must select the canonical Data Agent Panel Space")
+          if manifest.get("target_role") != os.environ["HFS_TARGET"]:
+              raise SystemExit("selected manifest target_role does not match the requested profile")
+          if os.environ["HFS_TARGET"] == "primary" and space_id != os.environ["FORMAL_SPACE"]:
+              raise SystemExit("primary manifest must select the canonical Data Agent Panel Space")
           with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env_file:
               env_file.write(f"SPACE_ID={space_id}\n")
           PY
@@ -127,7 +129,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$HFS_TARGET" == "production" ]]; then
+          if [[ "$HFS_TARGET" == "primary" ]]; then
             [[ "$GITHUB_REF" == "refs/heads/main" ]]
             git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
             [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]

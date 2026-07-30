@@ -62,7 +62,7 @@ GitHub workflow 会先执行静态检查和 bundle verifier，并在上传前和
 Space 文件，因此仅能写入已是 thin wrapper 的 canonical preview Space，或按需使用的空 candidate。workflow 不使用全仓上传、
 `--delete "*"` 或无条件 factory reboot。Preview 可直接修改 canonical Space，但 Secret 必须先写入本地明文 `.env`，并在写后完成 readback；candidate 不作为常规前置。
 
-Candidate 与 production profile 都要求目标 Space 已是 private。Production 还固定为
+Candidate 与 primary profile 都声明 `space_visibility = "protected"` 和 `bucket_visibility = "private"`。Primary 还固定为
 `BlueSkyXN/Data-Agent-Panel-HFS`，并在 upload 紧前 fresh fetch `origin/main`，要求 workflow ref、
 checkout `HEAD`、`GITHUB_SHA`、`SOURCE_REF` 与 current main 完全一致；candidate 继续允许选择
 `origin/main` 可达的已审阅历史 commit。

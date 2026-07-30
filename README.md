@@ -90,7 +90,7 @@ Hugging Face Docker Space 采用 HFS v2.1 Preview / Pattern B thin source wrappe
 - 导出时必须提供完整不可变的 Git commit 与 Python base-image digest；Space Dockerfile checkout 后会校验 `HEAD` 与该 commit 一致。
 - wrapper 要求已有可写 `/data` Storage Bucket mount，SQLite、任务交接和生成的签名材料固定在 `/data/data-agent-platform`，不会回退到 `/tmp`。
 - Canonical 只读诊断入口为 `/_ops/healthz`，兼容 `/_ops/health`、`/healthz` 和 `/nginx-health`。
-- `hfs-dev.toml` 的 canonical target 为 `primary`；Preview 允许直接更新该 Space。Secret 必须先保存在 ignored plaintext `.env`，candidate 仅作高风险可选验证。
+- `hfs-dev.toml` 的 canonical target 为 `primary`，并声明 Space 为 Protected、登记的 Bucket 为 Private；Preview 允许直接更新该 Space。Secret 必须先保存在 ignored plaintext `.env`，candidate 仅作高风险可选验证。
 - `/_ops/` 是 HFS 只读控制面，聚合 health、system、config、persistence、errors 和 metrics，不承载写操作。
 - `/_admin/` 是平台 Admin 控制面入口，复用应用登录和 RBAC；只有 `admin` 角色可读取 `/api/admin/*`。
 

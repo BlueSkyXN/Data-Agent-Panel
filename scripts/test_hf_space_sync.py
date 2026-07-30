@@ -363,12 +363,12 @@ class SyncSafetyTests(unittest.TestCase):
 
                         with (
                             mock.patch.object(sync, "api_client", return_value=FakeApi()),
-                            mock.patch.object(sync, "bucket_cp") as bucket_copy,
+                            mock.patch.object(sync, "bucket_read_bytes") as bucket_read,
                             redirect_stdout(io.StringIO()),
                             self.assertRaisesRegex(sync.SyncError, "符号链接|目录"),
                         ):
                             sync.cmd_pull(root)
-                        bucket_copy.assert_not_called()
+                        bucket_read.assert_not_called()
 
     def test_unique_pull_dir_rejects_final_parent_symlink_and_escape(self) -> None:
         with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryDirectory() as outside:
