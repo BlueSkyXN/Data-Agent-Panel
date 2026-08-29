@@ -2,7 +2,7 @@
 
 ## Hugging Face Docker Space
 
-Data Agent Panel 的 HFS v2.1 Preview 部署使用 thin source wrapper，而不是将产品仓根目录同步到
+Data Agent Panel 的 HFS v3.0 Preview 部署使用 thin source wrapper，而不是将产品仓根目录同步到
 Space。当前约定：
 
 ```text

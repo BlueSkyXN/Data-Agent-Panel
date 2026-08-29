@@ -27,7 +27,7 @@ WRAPPER_INPUTS = ("cloud/hfs", "hfs-dev.toml", "hfs-dev.candidate.toml", "script
 EXPECTED_BUNDLE_FILES = {".dockerignore", "BUILD_SOURCE.json", "Dockerfile", "README.md", "entrypoint.sh", "hfs-dev.toml"}
 ALLOWED_SPACE_FILES = EXPECTED_BUNDLE_FILES | {".gitattributes"}
 EXPECTED_MANIFEST = {
-    "standard": "2.1",
+    "standard": "3.0",
     "project": "data-agent-panel",
     "space": "BlueSkyXN/Data-Agent-Panel-HFS",
     "sovereignty": "sovereign",
@@ -38,16 +38,15 @@ EXPECTED_MANIFEST = {
     "space_visibility": "protected",
     "bucket_visibility": "private",
     "env_file": ".env",
-    "secret_files": [],
 }
 EXPECTED_LOCAL_ONLY = {"HF_TOKEN", "GH_TOKEN"}
 EXPECTED_SECRETS = {
     "DAP_SECRET_KEY",
-    "DAP_OPS_TOKEN",
-    "DAP_BOOTSTRAP_ADMIN_USERNAME",
-    "DAP_BOOTSTRAP_ADMIN_PASSWORD",
+    "OPS_TOKEN",
 }
+EXPECTED_OPTIONAL_SECRETS = {"ADMIN_PASSWORD"}
 EXPECTED_VARIABLES = {
+    "ADMIN_USERNAME",
     "DAP_APP_ENV",
     "DAP_APP_VERSION",
     "DAP_DEMO_MODE",
@@ -180,7 +179,13 @@ def require_exact_key_set(manifest: dict[str, object], key: str, expected: set[s
 
 def check_hfs_manifest() -> None:
     manifest = tomllib.loads((ROOT / "hfs-dev.toml").read_text(encoding="utf-8"))
-    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables", "deviations"}
+    allowed_keys = set(EXPECTED_MANIFEST) | {
+        "local_only",
+        "secrets",
+        "optional_secrets",
+        "variables",
+        "deviations",
+    }
     if set(manifest) != allowed_keys:
         raise SystemExit(
             "hfs-dev.toml must remain a minimal semantic registry; unexpected keys: "
@@ -191,16 +196,23 @@ def check_hfs_manifest() -> None:
             raise SystemExit(f"hfs-dev.toml {key} must be {value!r}, got {manifest.get(key)!r}")
     require_exact_key_set(manifest, "local_only", EXPECTED_LOCAL_ONLY)
     require_exact_key_set(manifest, "secrets", EXPECTED_SECRETS)
+    require_exact_key_set(manifest, "optional_secrets", EXPECTED_OPTIONAL_SECRETS)
     require_exact_key_set(manifest, "variables", EXPECTED_VARIABLES)
     if manifest.get("deviations") != EXPECTED_DEVIATIONS:
         raise SystemExit("hfs-dev.toml deviations must document only the reviewed base-image placeholder")
-    if set(manifest["local_only"]) & (set(manifest["secrets"]) | set(manifest["variables"])):
+    if set(manifest["local_only"]) & (
+        set(manifest["secrets"])
+        | set(manifest["optional_secrets"])
+        | set(manifest["variables"])
+    ):
         raise SystemExit("local-only control credentials must not be registered as Space settings")
-    if set(manifest["secrets"]) & set(manifest["variables"]):
+    if set(manifest["secrets"]) & (set(manifest["optional_secrets"]) | set(manifest["variables"])):
         raise SystemExit("Space Secret and Variable names must not overlap")
+    if set(manifest["optional_secrets"]) & set(manifest["variables"]):
+        raise SystemExit("Optional Space Secret and Variable names must not overlap")
     candidate = tomllib.loads((ROOT / "hfs-dev.candidate.toml").read_text(encoding="utf-8"))
     candidate_expected = {
-        "space": "BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate",
+        "space": "BlueSkyXN/Data-Agent-Panel-HFS-v3-candidate",
         "target_role": "candidate",
         "env_file": "local/hfs-targets/candidate.env",
     }
@@ -492,6 +504,8 @@ def main() -> int:
     check_hfs_workflow()
     check_exporter_contract()
     run([sys.executable, "scripts/check_hfs_alignment.py", "."])
+    run([sys.executable, "scripts/check_hfs_v3_standard.py", ".", "--manifest", "hfs-dev.toml"])
+    run([sys.executable, "scripts/check_hfs_v3_standard.py", ".", "--manifest", "hfs-dev.candidate.toml"])
     run([sys.executable, "scripts/test_hf_space_sync.py"])
     check_python_compile()
     check_shell_scripts()

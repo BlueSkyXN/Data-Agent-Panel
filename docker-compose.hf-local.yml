@@ -9,7 +9,7 @@ services:
       DAP_HF_SPACE: "true"
       SPACE_HOST: localhost:7860
       DAP_SECRET_KEY: local-hf-secret-change-me
-      DAP_OPS_TOKEN: local-hf-ops-token
+      OPS_TOKEN: local-hf-ops-token
       DAP_CORS_ORIGINS: "*"
     volumes:
       - dap_hf_persist:/persist

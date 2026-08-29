@@ -1,6 +1,6 @@
 # Hugging Face Space 部署说明
 
-Data Agent Panel 使用 HFS v2.1 **Preview / Pattern B / source lane**。`cloud/hfs/` 是唯一
+Data Agent Panel 使用 HFS v3.0 **Preview / Pattern B / source lane**。`cloud/hfs/` 是唯一
 可导出的 Space wrapper；产品仓根目录、应用源码、数据库 schema、文档、`local/`、
 运行数据与 `.env*` 都不会上传到 Space。
 
@@ -42,17 +42,18 @@ owner 批准与读回。
 
 ```text
 DAP_SECRET_KEY
-DAP_OPS_TOKEN
-DAP_BOOTSTRAP_ADMIN_USERNAME
-DAP_BOOTSTRAP_ADMIN_PASSWORD
+OPS_TOKEN
+ADMIN_PASSWORD
 ```
 
-`DAP_BOOTSTRAP_ADMIN_*` 仅在关闭 demo seed 的首次初始化期间使用；管理员创建成功后应
-移除 bootstrap password。
+`ADMIN_PASSWORD` 仅在关闭 demo seed 的首次初始化期间使用；管理员创建成功后应移除。
+可选管理员资料使用 `ADMIN_NAME`、`ADMIN_EMAIL`、`ADMIN_DEPARTMENT`，不再接受旧的
+产品前缀 Bootstrap 键。
 
 **Variables**：
 
 ```text
+ADMIN_USERNAME
 DAP_APP_ENV
 DAP_APP_VERSION
 DAP_DEMO_MODE
@@ -75,9 +76,9 @@ PORT
 Settings 必须从本地明文 `.env` 事实源执行 `diff → push → readback`。Preview 日常变更可直接更新 canonical Space；Secret 必须本地先行，因为远端值无法读回：
 
 ```bash
-python3 scripts/hf_space_sync.py diff --manifest hfs-dev.toml --env-file .env
-python3 scripts/hf_space_sync.py push --manifest hfs-dev.toml --env-file .env
-python3 scripts/hf_space_sync.py diff --manifest hfs-dev.toml --env-file .env
+python3 scripts/hfs_dev.py diff --manifest hfs-dev.toml --env-file .env
+python3 scripts/hfs_dev.py push --manifest hfs-dev.toml --env-file .env
+python3 scripts/hfs_dev.py diff --manifest hfs-dev.toml --env-file .env
 ```
 
 `hfs-dev.candidate.toml` 使用独立账本 `local/hfs-targets/candidate.env`，只在高风险验证需要时显式选择，不是 Preview 常规前置。
@@ -103,7 +104,7 @@ wrapper 只接受 `/data` 下的路径，默认使用：
 完成 Space provenance readback、构建成功和显式 restart 授权后，可使用：
 
 ```bash
-OPS_TOKEN=<DAP_OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
+OPS_TOKEN=<OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
 ```
 
 smoke 会检查 health/ready、只读 ops、iframe headers、登录和基础问数链路。它不替代

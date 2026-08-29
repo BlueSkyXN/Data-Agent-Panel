@@ -12,7 +12,7 @@ def _truthy(value: str | None) -> bool:
 
 
 def _env(name: str, default: str = "") -> str:
-    """Read standalone platform environment variables with the DAP_ prefix."""
+    """Read product-specific platform variables with the DAP_ prefix."""
     return os.getenv(f"DAP_{name}", default)
 
 
@@ -62,7 +62,7 @@ class Settings:
     hf_space: bool = _is_hf_space()
     space_host: str = os.getenv("SPACE_HOST", "")
     space_id: str = os.getenv("SPACE_ID", "")
-    ops_token: str = _env("OPS_TOKEN", "")
+    ops_token: str = os.getenv("OPS_TOKEN", "")
     data_dir: Path = _default_data_dir()
     db_path: Path = Path(_env("DB_PATH", str(data_dir / "data_agent_platform.db")))
     business_db_path: Path = Path(_env("BUSINESS_DB_PATH", str(data_dir / "business_sample.db")))
@@ -80,11 +80,11 @@ class Settings:
     max_login_failures: int = int(_env("MAX_LOGIN_FAILURES", "5"))
     lockout_minutes: int = int(_env("LOCKOUT_MINUTES", "15"))
     allow_demo_seed: bool = _truthy(_env("ALLOW_DEMO_SEED", "true"))
-    bootstrap_admin_username: str = _env("BOOTSTRAP_ADMIN_USERNAME", "")
-    bootstrap_admin_password: str = _env("BOOTSTRAP_ADMIN_PASSWORD", "")
-    bootstrap_admin_name: str = _env("BOOTSTRAP_ADMIN_NAME", "Bootstrap Admin")
-    bootstrap_admin_email: str = _env("BOOTSTRAP_ADMIN_EMAIL", "")
-    bootstrap_admin_department: str = _env("BOOTSTRAP_ADMIN_DEPARTMENT", "Platform")
+    bootstrap_admin_username: str = os.getenv("ADMIN_USERNAME", "admin")
+    bootstrap_admin_password: str = os.getenv("ADMIN_PASSWORD", "")
+    bootstrap_admin_name: str = _env("ADMIN_NAME", "Platform Admin")
+    bootstrap_admin_email: str = _env("ADMIN_EMAIL", "")
+    bootstrap_admin_department: str = _env("ADMIN_DEPARTMENT", "Platform")
     log_level: str = _env("LOG_LEVEL", "INFO")
     allowed_external_agent_hosts: list[str] = [x.strip() for x in _env("ALLOWED_EXTERNAL_AGENT_HOSTS", "localhost,127.0.0.1").split(",") if x.strip()]
     codex_mode: str = _env("CODEX_MODE", "mock")  # mock | http | cli | sdk
@@ -122,7 +122,7 @@ class Settings:
         if hardened_runtime and self.secret_key == "change-me-in-production":
             warnings.append("DAP_SECRET_KEY is using the default value; set a strong secret before production use.")
         if hardened_runtime and not self.ops_token:
-            warnings.append("DAP_OPS_TOKEN is empty; /_ops endpoints are locked until a token is configured.")
+            warnings.append("OPS_TOKEN is empty; /_ops endpoints are locked until a token is configured.")
         if hardened_runtime and "*" in self.cors_origins:
             warnings.append("DAP_CORS_ORIGINS allows '*'; restrict origins before production use.")
         if hardened_runtime and self.demo_mode and self.allow_demo_seed:
@@ -131,7 +131,7 @@ class Settings:
         if hardened_runtime and (not self.demo_mode or not self.allow_demo_seed) and not bootstrap_admin_configured:
             warnings.append("DAP demo seed is disabled; provision administrator accounts before first login.")
         if hardened_runtime and bootstrap_admin_configured:
-            warnings.append("DAP_BOOTSTRAP_ADMIN_PASSWORD is configured; remove it after the initial administrator has been created.")
+            warnings.append("ADMIN_PASSWORD is configured; remove it after the initial administrator has been created.")
         if self.is_production and self.demo_mode:
             warnings.append("DAP_DEMO_MODE=true in production; disable demo mode after initial validation.")
         if self.is_production and self.codex_mode == "cli" and not self.codex_cli_enabled:

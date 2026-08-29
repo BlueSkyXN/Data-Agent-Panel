@@ -1,6 +1,6 @@
-standard = "2.1"
+standard = "3.0"
 project = "data-agent-panel"
-space = "BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate"
+space = "BlueSkyXN/Data-Agent-Panel-HFS-v3-candidate"
 sovereignty = "sovereign"
 lane = "source"
 version_source = "commit"
@@ -9,16 +9,15 @@ target_role = "candidate"
 space_visibility = "protected"
 bucket_visibility = "private"
 env_file = "local/hfs-targets/candidate.env"
-secret_files = []
 
 local_only = ["HF_TOKEN", "GH_TOKEN"]
 secrets = [
   "DAP_SECRET_KEY",
-  "DAP_OPS_TOKEN",
-  "DAP_BOOTSTRAP_ADMIN_USERNAME",
-  "DAP_BOOTSTRAP_ADMIN_PASSWORD",
+  "OPS_TOKEN",
 ]
+optional_secrets = ["ADMIN_PASSWORD"]
 variables = [
+  "ADMIN_USERNAME",
   "DAP_APP_ENV",
   "DAP_APP_VERSION",
   "DAP_DEMO_MODE",

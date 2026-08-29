@@ -505,7 +505,7 @@ def ops_config(
     settings = get_settings()
     payload = settings.redacted()
     payload["ops_token_configured"] = bool(settings.ops_token)
-    payload["env_presence"] = {k: bool(os.getenv(k)) for k in ["SPACE_ID", "SPACE_HOST", "DAP_SECRET_KEY", "DAP_OPS_TOKEN", "DAP_DATA_DIR", "DAP_PERSIST_DIR"]}
+    payload["env_presence"] = {k: bool(os.getenv(k)) for k in ["SPACE_ID", "SPACE_HOST", "DAP_SECRET_KEY", "OPS_TOKEN", "DAP_DATA_DIR", "DAP_PERSIST_DIR"]}
     return payload
 
 

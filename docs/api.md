@@ -140,7 +140,7 @@ GET /_admin/
 
 ## 运维诊断
 
-`/_ops/*` 使用 `DAP_OPS_TOKEN` 保护，支持 `X-Ops-Token`、`Authorization: Bearer <token>`、临时 query token 和 cookie-backed dashboard。该面只读，不提供重启、写配置、执行 SQL 或文件写入能力。
+`/_ops/*` 使用 `OPS_TOKEN` 保护，支持 `X-Ops-Token`、`Authorization: Bearer <token>`、临时 query token 和 cookie-backed dashboard。该面只读，不提供重启、写配置、执行 SQL 或文件写入能力。
 
 ```http
 GET /_ops/

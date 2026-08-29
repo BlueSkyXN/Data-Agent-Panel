@@ -48,7 +48,7 @@ spec.loader.exec_module(sync)
 
 def manifest_text(**overrides: object) -> str:
     values: dict[str, object] = {
-        "standard": "2.1",
+        "standard": "3.0",
         "project": "demo",
         "space": "example-org/demo",
         "project_class": "preview",
@@ -56,7 +56,6 @@ def manifest_text(**overrides: object) -> str:
         "space_visibility": "protected",
         "bucket_visibility": "private",
         "env_file": ".env",
-        "secret_files": [],
         "sovereignty": "sovereign",
         "lane": "artifact",
         "version_source": "tag",
@@ -95,7 +94,16 @@ class FakeApi:
         return {"name": "example-user"}
 
     def space_info(self, *_args: object, **_kwargs: object) -> object:
-        return object()
+        return types.SimpleNamespace(private=True)
+
+    def list_user_repos(self, *_args: object, **_kwargs: object) -> list[types.SimpleNamespace]:
+        return [types.SimpleNamespace(id="example-org/demo", type="space", visibility="protected")]
+
+    def bucket_info(self, *_args: object, **_kwargs: object) -> types.SimpleNamespace:
+        return types.SimpleNamespace(private=True)
+
+    def update_repo_settings(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
     def add_space_secret(self, _space: str, name: str, _value: str, **_kwargs: object) -> None:
         self.write_events.append(("secret", name))

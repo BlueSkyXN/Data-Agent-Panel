@@ -17,7 +17,7 @@
 
 ```text
 1. 设置强 DAP_SECRET_KEY。
-2. 关闭或限制 `DAP_DEMO_MODE` / `DAP_ALLOW_DEMO_SEED`，首次启动空 SQLite 库时用临时 `DAP_BOOTSTRAP_ADMIN_PASSWORD` 初始化管理员账号，创建后移除该 secret。
+2. 关闭或限制 `DAP_DEMO_MODE` / `DAP_ALLOW_DEMO_SEED`，首次启动空 SQLite 库时用临时 `ADMIN_PASSWORD` 初始化管理员账号，创建后移除该 secret。
 3. 限制 DAP_CORS_ORIGINS。
 4. 配置 HTTPS / WAF / 内网访问控制。
 5. 对接企业 SSO / LDAP / IAM。
@@ -25,7 +25,7 @@
 7. 接入真实数据源只读账号。
 8. 配置真实行列权限、数据分级、脱敏策略。
 9. 配置真实外部 Agent endpoint allowlist。
-10. 配置 DAP_OPS_TOKEN，并限制诊断入口访问范围。
+10. 配置 OPS_TOKEN，并限制诊断入口访问范围。
 11. 在 HFS / SQLite 阶段配置 `scripts/sqlite_backup.py` 定期快照与保留策略；接入企业数据库后切换到集中备份恢复。
 12. 完成 50–100 个真实业务问题评测。
 13. 完成安全扫描和权限绕过测试。
@@ -37,10 +37,10 @@
 |---|---|
 | `DAP_APP_ENV` | `dev` / `production` |
 | `DAP_SECRET_KEY` | Token 签名密钥，生产必须替换 |
-| `DAP_OPS_TOKEN` | `/_ops/*` 只读诊断入口 token，HF / production 未设置时会锁定 |
+| `OPS_TOKEN` | `/_ops/*` 只读诊断入口 token，HF / production 未设置时会锁定 |
 | `DAP_CORS_ORIGINS` | 允许跨域来源 |
 | `DAP_DEMO_MODE` / `DAP_ALLOW_DEMO_SEED` | 控制默认演示账号和演示平台 fixture；关闭后需自行预置管理员账号 |
-| `DAP_BOOTSTRAP_ADMIN_USERNAME` / `DAP_BOOTSTRAP_ADMIN_PASSWORD` | demo seed 关闭时的一次性 SQLite 管理员初始化入口；创建成功后移除 password |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | demo seed 关闭时的一次性 SQLite 管理员初始化入口；创建成功后移除 password |
 | `DAP_SQL_MAX_ROWS` | SQL 最大返回行数 |
 | `DAP_SQL_TIMEOUT_MS` | SQL 查询超时 |
 | `DAP_SQLITE_BUSY_TIMEOUT_MS` / `DAP_SQLITE_JOURNAL_MODE` / `DAP_SQLITE_SYNCHRONOUS` | SQLite 单体部署的写锁等待、journal 和同步策略 |

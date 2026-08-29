@@ -43,8 +43,8 @@ PY
   export DAP_SECRET_KEY="$(cat "$SECRET_FILE")"
 fi
 
-if [ -z "${DAP_OPS_TOKEN:-}" ]; then
-  echo "[data-agent-hf] WARNING: DAP_OPS_TOKEN is not set; /_ops endpoints will be locked."
+if [ -z "${OPS_TOKEN:-}" ]; then
+  echo "[data-agent-hf] WARNING: OPS_TOKEN is not set; /_ops endpoints will be locked."
 fi
 
 echo "[data-agent-hf] PORT=${PORT}"

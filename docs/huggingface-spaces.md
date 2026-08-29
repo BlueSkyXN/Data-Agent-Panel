@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-HFS v2.1 将 Data Agent Panel 的 Preview Space 边界定义为 Pattern B thin source wrapper：
+HFS v3.0 将 Data Agent Panel 的 Preview Space 边界定义为 Pattern B thin source wrapper：
 
 ```text
 exported wrapper
@@ -47,12 +47,12 @@ wrapper 会在 `/data` 缺失、不可写，或 `DAP_DATA_DIR`、数据库、任
 
 ## 4. 安全边界
 
-- `DAP_SECRET_KEY`、`DAP_OPS_TOKEN` 与一次性 bootstrap password 只能保留在 Space Secrets。
+- `DAP_SECRET_KEY`、`OPS_TOKEN` 与一次性 bootstrap password 只能保留在 Space Secrets。
 - wrapper/manifest 仅登记设置键名和关系；不保存真实值。
 - `HF_TOKEN`、`GH_TOKEN` 是本机或 CI 控制面凭据，永不传给 Space。
 - `/_ops/*` 保持只读，不执行重启、写配置、SQL 写入、任意命令或任意文件读取。
-- `/_admin/` 由应用登录和 `admin` 角色保护，不复用 `DAP_OPS_TOKEN` 做管理授权。
-- 公共或 Protected Space 仍应设置 `DAP_SECRET_KEY` 和 `DAP_OPS_TOKEN`，并限制 CORS 与外部 Agent host allowlist。
+- `/_admin/` 由应用登录和 `admin` 角色保护，不复用 `OPS_TOKEN` 做管理授权。
+- 公共或 Protected Space 仍应设置 `DAP_SECRET_KEY` 和 `OPS_TOKEN`，并限制 CORS 与外部 Agent host allowlist。
 
 ## 5. 导出与发布
 
@@ -70,7 +70,7 @@ checkout `HEAD`、`GITHUB_SHA`、`SOURCE_REF` 与 current main 完全一致；ca
 ## 6. 线上验收
 
 ```bash
-OPS_TOKEN=<DAP_OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
+OPS_TOKEN=<OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
 ```
 
 live smoke 覆盖公开 health/ready、ops、iframe header、登录和基础问数。还需单独验证

@@ -32,7 +32,7 @@
 DAP_APP_ENV=hf-space
 DAP_HF_SPACE=true
 DAP_SECRET_KEY=<强随机密钥>
-DAP_OPS_TOKEN=<运维只读 token>
+OPS_TOKEN=<运维只读 token>
 DAP_CODEX_MODE=mock
 ```
 
