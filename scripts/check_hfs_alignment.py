@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate this repository's HFS v2 source-lane semantic and bundle contracts."""
+"""Validate this repository's HFS v3 source-lane semantic and bundle contracts."""
 
 from __future__ import annotations
 
@@ -17,12 +17,17 @@ IMAGE = re.compile(r"^[A-Za-z0-9._/:+-]+@sha256:[0-9a-f]{64}$")
 ENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SOURCE_REPOSITORY = "https://github.com/BlueSkyXN/Data-Agent-Panel.git"
 EXPECTED_MANIFEST = {
-    "standard": "2.0",
+    "standard": "3.0",
     "project": "data-agent-panel",
     "space": "BlueSkyXN/Data-Agent-Panel-HFS",
     "sovereignty": "sovereign",
     "lane": "source",
     "version_source": "commit",
+    "project_class": "preview",
+    "target_role": "primary",
+    "space_visibility": "protected",
+    "bucket_visibility": "private",
+    "env_file": ".env",
 }
 EXPECTED_DEVIATIONS = [
     "business-image = PYTHON_BASE_IMAGE is a generated Dockerfile placeholder resolved from the reviewed immutable base-image input during wrapper export"
@@ -68,7 +73,13 @@ def check_manifest(report: Report, root: Path) -> None:
     if not manifest_path.is_file():
         return
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables", "deviations"}
+    allowed_keys = set(EXPECTED_MANIFEST) | {
+        "local_only",
+        "secrets",
+        "optional_secrets",
+        "variables",
+        "deviations",
+    }
     report.check(set(manifest) == allowed_keys, "manifest is a minimal HFS semantic registry", str(sorted(set(manifest) - allowed_keys)))
     for key, value in EXPECTED_MANIFEST.items():
         report.check(manifest.get(key) == value, f"manifest {key} is {value!r}", repr(manifest.get(key)))
@@ -76,14 +87,16 @@ def check_manifest(report: Report, root: Path) -> None:
         manifest.get("deviations") == EXPECTED_DEVIATIONS,
         "manifest deviations document only the reviewed base-image placeholder",
     )
-    for key in ("local_only", "secrets", "variables"):
+    for key in ("local_only", "secrets", "optional_secrets", "variables"):
         report.check(key_list(manifest.get(key)), f"manifest {key} contains only environment key names")
-    if all(key_list(manifest.get(key)) for key in ("local_only", "secrets", "variables")):
+    if all(key_list(manifest.get(key)) for key in ("local_only", "secrets", "optional_secrets", "variables")):
         local_only = set(manifest["local_only"])
         secrets = set(manifest["secrets"])
+        optional_secrets = set(manifest["optional_secrets"])
         variables = set(manifest["variables"])
-        report.check(not (local_only & (secrets | variables)), "local-only credentials are not Space settings")
-        report.check(not (secrets & variables), "Secret and Variable names do not overlap")
+        report.check(not (local_only & (secrets | optional_secrets | variables)), "local-only credentials are not Space settings")
+        report.check(not (secrets & optional_secrets), "Required and optional Secret names do not overlap")
+        report.check(not ((secrets | optional_secrets) & variables), "Secret and Variable names do not overlap")
 
 
 def check_wrapper(report: Report, root: Path) -> None:
@@ -159,7 +172,7 @@ def main() -> int:
     if report.failures:
         print(f"\nFAIL {len(report.failures)} HFS alignment checks")
         return 1
-    print("\nPASS HFS v2 source-lane semantic and wrapper contracts")
+    print("\nPASS HFS v3 source-lane semantic and wrapper contracts")
     return 0
 
 

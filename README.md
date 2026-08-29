@@ -83,13 +83,14 @@ docker compose up --build
 
 ## Hugging Face Space 部署
 
-Hugging Face Docker Space 采用 Pattern B thin source wrapper：
+Hugging Face Docker Space 采用 HFS v3.0 Preview / Pattern B thin source wrapper：
 
 - `cloud/hfs/` 是唯一的 Space wrapper 源；产品仓根目录不再作为 Space build context。
 - `scripts/export_hfs_space_bundle.py` 只导出 wrapper、无密 `hfs-dev.toml` 和生成的 `BUILD_SOURCE.json`；不会导出 `apps/`、`database/`、`docs/`、`local/`、`data/` 或 `.env*`。
 - 导出时必须提供完整不可变的 Git commit 与 Python base-image digest；Space Dockerfile checkout 后会校验 `HEAD` 与该 commit 一致。
 - wrapper 要求已有可写 `/data` Storage Bucket mount，SQLite、任务交接和生成的签名材料固定在 `/data/data-agent-platform`，不会回退到 `/tmp`。
 - Canonical 只读诊断入口为 `/_ops/healthz`，兼容 `/_ops/health`、`/healthz` 和 `/nginx-health`。
+- `hfs-dev.toml` 的 canonical target 为 `primary`，并声明 Space 为 Protected、登记的 Bucket 为 Private；Preview 允许直接更新该 Space。Secret 必须先保存在 ignored plaintext `.env`，candidate 仅作高风险可选验证。
 - `/_ops/` 是 HFS 只读控制面，聚合 health、system、config、persistence、errors 和 metrics，不承载写操作。
 - `/_admin/` 是平台 Admin 控制面入口，复用应用登录和 RBAC；只有 `admin` 角色可读取 `/api/admin/*`。
 
@@ -111,24 +112,24 @@ DAP_SQLITE_INIT_LOCK_TIMEOUT_SECONDS=30
 
 ```env
 DAP_SECRET_KEY=<强随机密钥>
-DAP_OPS_TOKEN=<强随机运维只读 token>
+OPS_TOKEN=<强随机运维只读 token>
 # 关闭 demo seed 后首次初始化管理员时临时设置，创建成功后移除：
-# DAP_BOOTSTRAP_ADMIN_USERNAME=<管理员用户名>
-# DAP_BOOTSTRAP_ADMIN_PASSWORD=<一次性强密码>
+# ADMIN_USERNAME=<管理员用户名>
+# ADMIN_PASSWORD=<一次性强密码>
 ```
 
-`DAP_OPS_TOKEN` 未配置时，`/_ops/*` 诊断入口会在 Hugging Face / production 模式下锁定。Docker/HF 启动脚本会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但正式部署仍建议显式设置并保存在 Space Secrets 中。
+`OPS_TOKEN` 未配置时，`/_ops/*` 诊断入口会在 Hugging Face / production 模式下锁定。Docker/HF 启动脚本会在 `DAP_SECRET_KEY` 缺失时生成持久化随机值，但正式部署仍建议显式设置并保存在 Space Secrets 中。
 
-浏览器临时进入 ops 面时，可使用 `/_ops/?token=<DAP_OPS_TOKEN>` 换取 HttpOnly cookie，页面会跳回无 query 的 `/_ops/`，不会把完整 token 写入 HTML。CLI 和自动化优先使用 `X-Ops-Token`。
+浏览器临时进入 ops 面时，可使用 `/_ops/?token=<OPS_TOKEN>` 换取 HttpOnly cookie，页面会跳回无 query 的 `/_ops/`，不会把完整 token 写入 HTML。CLI 和自动化优先使用 `X-Ops-Token`。
 
-如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；可在首次启动时临时设置 `DAP_BOOTSTRAP_ADMIN_USERNAME` / `DAP_BOOTSTRAP_ADMIN_PASSWORD`，后端会把管理员账号写入 SQLite 并授予 `admin` 角色。创建成功后应移除 bootstrap password，避免长期保留初始化 secret。
+如果将 `DAP_DEMO_MODE` 或 `DAP_ALLOW_DEMO_SEED` 设为 `false`，启动时不会创建默认演示账号和内置演示平台 fixture；可在首次启动时临时设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，后端会把管理员账号写入 SQLite 并授予 `admin` 角色。创建成功后应移除 bootstrap password，避免长期保留初始化 secret。
 
 HFS / SQLite 阶段不需要外部数据库；启动期 schema / seed 会通过 `DAP_DATA_DIR/.sqlite-init.lock` 串行化，`/_ops/persistence` 会暴露 schema、备份新鲜度、数据目录剩余空间和 SQLite 锁文件状态。
 
 部署后执行：
 
 ```bash
-OPS_TOKEN=<你的 DAP_OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
+OPS_TOKEN=<你的 OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
 ```
 
 ## Codex 嵌套说明

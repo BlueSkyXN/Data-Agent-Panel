@@ -1,11 +1,11 @@
 # Hugging Face Space 适配完成记录
 
-> 历史记录：本文描述 v0.5 的 repo-root Space 适配，已被当前 HFS v2 Pattern B thin source wrapper 取代。当前部署契约以 `README.hf-space.md`、`docs/huggingface-spaces.md` 和 `cloud/hfs/` 为准。
+> 历史记录：本文描述 v0.5 的 repo-root Space 适配，已被当前 HFS v3 Pattern B thin source wrapper 取代。当前部署契约以 `README.hf-space.md`、`docs/huggingface-spaces.md` 和 `cloud/hfs/` 为准。
 
 版本：`0.5.0-hf-space`
 
-当前补充：后续版本已将 HF / production 模式下未配置 `DAP_OPS_TOKEN` 的 `/_ops/*`
-行为调整为锁定并返回 503；配置 `DAP_OPS_TOKEN` 后才期望返回 200。
+当前补充：后续版本已将 HF / production 模式下未配置 `OPS_TOKEN` 的 `/_ops/*`
+行为调整为锁定并返回 503；配置 `OPS_TOKEN` 后才期望返回 200。
 
 ## 已完成
 
@@ -13,7 +13,7 @@
 - 根目录 Dockerfile 改为 HF Docker Space 单容器入口。
 - 运行用户改为 UID/GID 1000 的 `user`。
 - 新增 `hf_entrypoint.sh`，支持 `/persist`、`/data`、`/tmp` 自动数据目录选择。
-- 新增 `DAP_HF_SPACE`、`DAP_PERSIST_DIR`、`DAP_OPS_TOKEN`、`SPACE_HOST`、`SPACE_ID` 运行时识别。
+- 新增 `DAP_HF_SPACE`、`DAP_PERSIST_DIR`、`OPS_TOKEN`、`SPACE_HOST`、`SPACE_ID` 运行时识别。
 - 新增 `/healthz`、`/nginx-health`、`/_ops/health`、`/_ops/system`、`/_ops/config`、`/_ops/version`。
 - HF 模式移除 `X-Frame-Options=SAMEORIGIN`，改用 CSP `frame-ancestors` 允许 Hugging Face 父页面。
 - 新增 `.dockerignore`，防止本地 SQLite DB、日志、Codex 任务进入镜像。
@@ -34,7 +34,7 @@ python scripts/security_smoke_test.py
 python scripts/full_agent_smoke_test.py
 python scripts/codex_runtime_smoke_test.py
 python scripts/hardening_regression_test.py
-DAP_HF_SPACE=true DAP_OPS_TOKEN=local-hf-ops-token DAP_DATA_DIR=/tmp/dap-hf-test python scripts/hf_mode_regression_test.py
+DAP_HF_SPACE=true OPS_TOKEN=local-hf-ops-token DAP_DATA_DIR=/tmp/dap-hf-test python scripts/hf_mode_regression_test.py
 DAP_HF_SPACE=true DAP_DATA_DIR=/tmp/dap-hf-test-noops python scripts/hf_mode_regression_test.py
 node --check apps/web/static/app.js
 ```

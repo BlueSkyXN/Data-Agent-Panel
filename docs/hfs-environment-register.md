@@ -32,7 +32,7 @@
 | Key | Required state | Notes |
 |---|---|---|
 | `DAP_SECRET_KEY` | present | Write-only on the Hub. Rotate through the Space CLI; never record the value here. |
-| `DAP_OPS_TOKEN` | present | Write-only on the Hub. Required for authenticated `/_ops/*` smoke; never record the value here. |
+| `OPS_TOKEN` | present | Write-only on the Hub. Required for authenticated `/_ops/*` smoke; never record the value here. |
 
 ## Release base image
 

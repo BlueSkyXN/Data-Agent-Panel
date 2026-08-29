@@ -19,13 +19,13 @@ curl http://localhost:8000/api/health/ready
 
 ## HFS Ops / Admin 控制面
 
-`/_ops/` 是 HFS 只读诊断面。设置 `DAP_OPS_TOKEN` 后，用 `X-Ops-Token` 访问：
+`/_ops/` 是 HFS 只读诊断面。设置 `OPS_TOKEN` 后，用 `X-Ops-Token` 访问：
 
 ```bash
-curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/healthz
-curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/persistence
-curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/errors
-curl -H "X-Ops-Token: $DAP_OPS_TOKEN" http://localhost:8000/_ops/metrics
+curl -H "X-Ops-Token: $OPS_TOKEN" http://localhost:8000/_ops/healthz
+curl -H "X-Ops-Token: $OPS_TOKEN" http://localhost:8000/_ops/persistence
+curl -H "X-Ops-Token: $OPS_TOKEN" http://localhost:8000/_ops/errors
+curl -H "X-Ops-Token: $OPS_TOKEN" http://localhost:8000/_ops/metrics
 ```
 
 `/_ops/persistence` 会返回平台库 `PRAGMA user_version`、`platform_metadata.schema_version`、`last_migrated_at`、SQLite journal/page 信息、表计数、最近 SQLite 运维任务、备份新鲜度、数据目录剩余空间、`sqlite_references` 和 integrity check，用来确认 HFS 单体运行时是否加载到预期 schema 与持久化目录。`sqlite_references.ok=false` 表示平台元数据和业务 SQLite 表或字段引用不一致，`/api/health/ready` 会返回 `503`。

@@ -67,8 +67,8 @@ Commands below are confirmed from `README.md`, `.github/workflows/ci.yml`, `.git
 - All generated or user-provided SQL must remain read-only and pass `apps/api/services/sql_guard.py`.
 - Any Codex task that can change code must require human approval before CLI/SDK dispatch.
 - Preserve backward-compatible API responses unless a migration note and corresponding docs are added.
-- Keep demo mode isolated from production/HF configuration. Treat `DAP_DEMO_MODE`, `DAP_ALLOW_DEMO_SEED`, `DAP_SECRET_KEY`, `DAP_OPS_TOKEN`, `DAP_CORS_ORIGINS`, and `DAP_ALLOWED_EXTERNAL_AGENT_HOSTS` as security-sensitive.
-- Environment variables use the `DAP_` prefix. Commit only `.env.example`; do not commit `.env`, `.env.local`, real tokens, real account data, private hosts, or secrets.
+- Keep demo mode isolated from production/HF configuration. Treat `DAP_DEMO_MODE`, `DAP_ALLOW_DEMO_SEED`, `DAP_SECRET_KEY`, `OPS_TOKEN`, `DAP_CORS_ORIGINS`, and `DAP_ALLOWED_EXTERNAL_AGENT_HOSTS` as security-sensitive.
+- Product-specific environment variables use the `DAP_` prefix. HFS v3.0 control/bootstrap credentials are the deliberate strict exceptions: `OPS_TOKEN`, `ADMIN_USERNAME`, and `ADMIN_PASSWORD`; no `DAP_` fallback is accepted. Commit only `.env.example`; do not commit `.env`, `.env.local`, real tokens, real account data, private hosts, or secrets.
 - Prefer additive schema/runtime changes. Existing installs may run newer code over older demo DBs, so keep `apps/api/db.py` additive migration behavior in mind.
 - Keep Hugging Face Space as Pattern B / `cloud/hfs` thin source wrapper. `hfs-dev.toml`, `cloud/hfs/`, `scripts/export_hfs_space_bundle.py`, `hf_entrypoint.sh`, `scripts/hf_space_smoke.sh`, and `.github/workflows/sync-hf-space.yml` must stay aligned. Root `Dockerfile` remains the local/CI product image, not the Space build context.
 - This repo has no root JavaScript build system. The frontend is static HTML/CSS/JS served by FastAPI.

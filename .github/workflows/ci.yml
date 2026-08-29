@@ -36,7 +36,7 @@ jobs:
           DAP_DEMO_MODE: "true"
           DAP_HF_SPACE: "true"
           DAP_SECRET_KEY: ci-secret-not-for-production
-          DAP_OPS_TOKEN: ci-ops-token
+          OPS_TOKEN: ci-ops-token
           DAP_DATA_DIR: ${{ runner.temp }}/dap-data
         run: |
           python scripts/reset_db.py
@@ -58,7 +58,7 @@ jobs:
         run: |
           docker run -d --name data-agent-panel -p 7860:7860 \
             -e DAP_SECRET_KEY=ci-secret-not-for-production \
-            -e DAP_OPS_TOKEN=ci-ops-token \
+            -e OPS_TOKEN=ci-ops-token \
             data-agent-panel:test
       - name: Remote-style smoke
         env:

@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-HFS v2 将 Data Agent Panel 的 Space 边界改为 Pattern B thin source wrapper：
+HFS v3.0 将 Data Agent Panel 的 Preview Space 边界定义为 Pattern B thin source wrapper：
 
 ```text
 exported wrapper
@@ -47,23 +47,22 @@ wrapper 会在 `/data` 缺失、不可写，或 `DAP_DATA_DIR`、数据库、任
 
 ## 4. 安全边界
 
-- `DAP_SECRET_KEY`、`DAP_OPS_TOKEN` 与一次性 bootstrap password 只能保留在 Space Secrets。
+- `DAP_SECRET_KEY`、`OPS_TOKEN` 与一次性 bootstrap password 只能保留在 Space Secrets。
 - wrapper/manifest 仅登记设置键名和关系；不保存真实值。
 - `HF_TOKEN`、`GH_TOKEN` 是本机或 CI 控制面凭据，永不传给 Space。
 - `/_ops/*` 保持只读，不执行重启、写配置、SQL 写入、任意命令或任意文件读取。
-- `/_admin/` 由应用登录和 `admin` 角色保护，不复用 `DAP_OPS_TOKEN` 做管理授权。
-- 公共或 Protected Space 仍应设置 `DAP_SECRET_KEY` 和 `DAP_OPS_TOKEN`，并限制 CORS 与外部 Agent host allowlist。
+- `/_admin/` 由应用登录和 `admin` 角色保护，不复用 `OPS_TOKEN` 做管理授权。
+- 公共或 Protected Space 仍应设置 `DAP_SECRET_KEY` 和 `OPS_TOKEN`，并限制 CORS 与外部 Agent host allowlist。
 
 ## 5. 导出与发布
 
 导出使用完整 commit 和 base digest；destination 必须为空，工具不会覆盖既有目录。wrapper 输入必须
 已提交且与 `--wrapper-ref` 一致，否则 exporter 拒绝生成会误报 provenance 的 bundle。手动触发的
 GitHub workflow 会先执行静态检查和 bundle verifier，并在上传前和写后读回时拒绝 allowlist 外的
-Space 文件，因此仅能写入空 candidate 或已是 thin wrapper 的 Space。workflow 不使用全仓上传、
-`--delete "*"` 或无条件 factory reboot。旧 full-repo Space tree 的清理、Space 选择、Settings
-push、restart、数据恢复和生产 cutover 必须经独立 owner 批准并在写后读回。
+Space 文件，因此仅能写入已是 thin wrapper 的 canonical preview Space，或按需使用的空 candidate。workflow 不使用全仓上传、
+`--delete "*"` 或无条件 factory reboot。Preview 可直接修改 canonical Space，但 Secret 必须先写入本地明文 `.env`，并在写后完成 readback；candidate 不作为常规前置。
 
-Candidate 与 production profile 都要求目标 Space 已是 private。Production 还固定为
+Candidate 与 primary profile 都声明 `space_visibility = "protected"` 和 `bucket_visibility = "private"`。Primary 还固定为
 `BlueSkyXN/Data-Agent-Panel-HFS`，并在 upload 紧前 fresh fetch `origin/main`，要求 workflow ref、
 checkout `HEAD`、`GITHUB_SHA`、`SOURCE_REF` 与 current main 完全一致；candidate 继续允许选择
 `origin/main` 可达的已审阅历史 commit。
@@ -71,7 +70,7 @@ checkout `HEAD`、`GITHUB_SHA`、`SOURCE_REF` 与 current main 完全一致；ca
 ## 6. 线上验收
 
 ```bash
-OPS_TOKEN=<DAP_OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
+OPS_TOKEN=<OPS_TOKEN> scripts/hf_space_smoke.sh https://<space-name>.hf.space
 ```
 
 live smoke 覆盖公开 health/ready、ops、iframe header、登录和基础问数。还需单独验证

@@ -2,7 +2,7 @@
 
 ## Hugging Face Docker Space
 
-Data Agent Panel 的 HFS v2 部署使用 thin source wrapper，而不是将产品仓根目录同步到
+Data Agent Panel 的 HFS v3.0 Preview 部署使用 thin source wrapper，而不是将产品仓根目录同步到
 Space。当前约定：
 
 ```text
@@ -22,9 +22,9 @@ commit，并验证 checkout `HEAD`。`scripts/export_hfs_space_bundle.py` 只导
 
 1. canonical source/wrapper commit；
 2. 已审批 Python base-image digest；
-3. candidate/目标 Space 的 `/data` Storage Bucket mount；
+3. canonical preview Space 的 `/data` Storage Bucket mount；candidate 仅在高风险可选验证时使用；
 4. SQLite backup、verify 和隔离恢复基线；
-5. Settings 最小键集与生产切换/restart 授权。
+5. Settings 最小键集与 restart 授权；Secret 必须本地明文先行。
 
 详细的无密导出、Settings 分类和执行边界见 `README.hf-space.md`。本仓的手动 workflow
 仅上传已验证的最小 wrapper bundle，并在写前/写后拒绝 allowlist 外的 Space tree；不默认删除旧

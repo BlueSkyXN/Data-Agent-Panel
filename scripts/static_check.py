@@ -27,21 +27,26 @@ WRAPPER_INPUTS = ("cloud/hfs", "hfs-dev.toml", "hfs-dev.candidate.toml", "script
 EXPECTED_BUNDLE_FILES = {".dockerignore", "BUILD_SOURCE.json", "Dockerfile", "README.md", "entrypoint.sh", "hfs-dev.toml"}
 ALLOWED_SPACE_FILES = EXPECTED_BUNDLE_FILES | {".gitattributes"}
 EXPECTED_MANIFEST = {
-    "standard": "2.0",
+    "standard": "3.0",
     "project": "data-agent-panel",
     "space": "BlueSkyXN/Data-Agent-Panel-HFS",
     "sovereignty": "sovereign",
     "lane": "source",
     "version_source": "commit",
+    "project_class": "preview",
+    "target_role": "primary",
+    "space_visibility": "protected",
+    "bucket_visibility": "private",
+    "env_file": ".env",
 }
 EXPECTED_LOCAL_ONLY = {"HF_TOKEN", "GH_TOKEN"}
 EXPECTED_SECRETS = {
     "DAP_SECRET_KEY",
-    "DAP_OPS_TOKEN",
-    "DAP_BOOTSTRAP_ADMIN_USERNAME",
-    "DAP_BOOTSTRAP_ADMIN_PASSWORD",
+    "OPS_TOKEN",
 }
+EXPECTED_OPTIONAL_SECRETS = {"ADMIN_PASSWORD"}
 EXPECTED_VARIABLES = {
+    "ADMIN_USERNAME",
     "DAP_APP_ENV",
     "DAP_APP_VERSION",
     "DAP_DEMO_MODE",
@@ -174,7 +179,13 @@ def require_exact_key_set(manifest: dict[str, object], key: str, expected: set[s
 
 def check_hfs_manifest() -> None:
     manifest = tomllib.loads((ROOT / "hfs-dev.toml").read_text(encoding="utf-8"))
-    allowed_keys = set(EXPECTED_MANIFEST) | {"local_only", "secrets", "variables", "deviations"}
+    allowed_keys = set(EXPECTED_MANIFEST) | {
+        "local_only",
+        "secrets",
+        "optional_secrets",
+        "variables",
+        "deviations",
+    }
     if set(manifest) != allowed_keys:
         raise SystemExit(
             "hfs-dev.toml must remain a minimal semantic registry; unexpected keys: "
@@ -185,19 +196,35 @@ def check_hfs_manifest() -> None:
             raise SystemExit(f"hfs-dev.toml {key} must be {value!r}, got {manifest.get(key)!r}")
     require_exact_key_set(manifest, "local_only", EXPECTED_LOCAL_ONLY)
     require_exact_key_set(manifest, "secrets", EXPECTED_SECRETS)
+    require_exact_key_set(manifest, "optional_secrets", EXPECTED_OPTIONAL_SECRETS)
     require_exact_key_set(manifest, "variables", EXPECTED_VARIABLES)
     if manifest.get("deviations") != EXPECTED_DEVIATIONS:
         raise SystemExit("hfs-dev.toml deviations must document only the reviewed base-image placeholder")
-    if set(manifest["local_only"]) & (set(manifest["secrets"]) | set(manifest["variables"])):
+    if set(manifest["local_only"]) & (
+        set(manifest["secrets"])
+        | set(manifest["optional_secrets"])
+        | set(manifest["variables"])
+    ):
         raise SystemExit("local-only control credentials must not be registered as Space settings")
-    if set(manifest["secrets"]) & set(manifest["variables"]):
+    if set(manifest["secrets"]) & (set(manifest["optional_secrets"]) | set(manifest["variables"])):
         raise SystemExit("Space Secret and Variable names must not overlap")
+    if set(manifest["optional_secrets"]) & set(manifest["variables"]):
+        raise SystemExit("Optional Space Secret and Variable names must not overlap")
     candidate = tomllib.loads((ROOT / "hfs-dev.candidate.toml").read_text(encoding="utf-8"))
-    if candidate.get("space") != "BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate":
-        raise SystemExit("candidate manifest must select BlueSkyXN/Data-Agent-Panel-HFS-v2-candidate")
+    candidate_expected = {
+        "space": "BlueSkyXN/Data-Agent-Panel-HFS-v3-candidate",
+        "target_role": "candidate",
+        "env_file": "local/hfs-targets/candidate.env",
+    }
+    for key, value in candidate_expected.items():
+        if candidate.get(key) != value:
+            raise SystemExit(f"candidate manifest {key} must be {value!r}")
     for key in sorted(set(manifest) | set(candidate)):
-        if key != "space" and manifest.get(key) != candidate.get(key):
-            raise SystemExit(f"candidate manifest differs from production at {key}")
+        if (
+            key not in {"space", "target_role", "env_file"}
+            and manifest.get(key) != candidate.get(key)
+        ):
+            raise SystemExit(f"candidate manifest differs from canonical preview at {key}")
 
 
 def check_wrapper_contract() -> None:
@@ -278,8 +305,9 @@ def check_hfs_workflow() -> None:
         "git cat-file -e",
         "git merge-base --is-ancestor",
         "export_hfs_space_bundle.py",
-        "huggingface_hub==1.5.0",
-        "click==8.3.3",
+        "huggingface_hub==1.25.1",
+        "click==8.4.2",
+        "repos settings --help | grep -- --protected",
         "python -m huggingface_hub.cli.hf version",
         "python -m huggingface_hub.cli.hf --help",
         "python -m huggingface_hub.cli.hf upload --help",
@@ -306,7 +334,8 @@ def check_hfs_workflow() -> None:
         raise SystemExit("HFS deploy workflow must not accept an arbitrary Space id")
     upload_offset = workflow.index('python -m huggingface_hub.cli.hf upload "$SPACE_ID"')
     required_before_upload = (
-        'if os.environ["HFS_TARGET"] == "production" and space_id != os.environ["FORMAL_SPACE"]:',
+        'if manifest.get("target_role") != os.environ["HFS_TARGET"]:',
+        'if os.environ["HFS_TARGET"] == "primary" and space_id != os.environ["FORMAL_SPACE"]:',
         'if info.private is not True:',
         '[[ "$GITHUB_REF" == "refs/heads/main" ]]',
         'git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main',
@@ -317,9 +346,9 @@ def check_hfs_workflow() -> None:
     for fragment in required_before_upload:
         offset = workflow.find(fragment)
         if offset < 0 or offset > upload_offset:
-            raise SystemExit(f"HFS production pre-upload gate is missing or late: {fragment!r}")
+            raise SystemExit(f"HFS primary pre-upload gate is missing or late: {fragment!r}")
     if 'os.environ["HFS_TARGET"] == "candidate" and not info.private' in workflow:
-        raise SystemExit("HFS deploy workflow must require private visibility for production too")
+        raise SystemExit("HFS deploy workflow must require non-public visibility for primary too")
     if not (ROOT / "scripts" / "hf_space_sync.py").is_file():
         raise SystemExit("reference Settings diff/push/readback tool is missing")
 
@@ -475,6 +504,9 @@ def main() -> int:
     check_hfs_workflow()
     check_exporter_contract()
     run([sys.executable, "scripts/check_hfs_alignment.py", "."])
+    run([sys.executable, "scripts/check_hfs_v3_standard.py", ".", "--manifest", "hfs-dev.toml"])
+    run([sys.executable, "scripts/check_hfs_v3_standard.py", ".", "--manifest", "hfs-dev.candidate.toml"])
+    run([sys.executable, "scripts/test_hf_space_sync.py"])
     check_python_compile()
     check_shell_scripts()
     check_hf_entrypoint_backup_contract()
